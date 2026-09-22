@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.egg-info/
+sessions/
+.pytest_cache/
+_disk_bench/

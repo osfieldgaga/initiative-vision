@@ -2,7 +2,7 @@
 
 **Status:** Planned, awaiting your approval. Only start after Sprint 3 (or earlier if you choose. It needs only the Sprint 1 convention).
 
-**Open question raised 2026-09-23 (see `sprint-2-can-logging.md`'s open question 6):** you mentioned using the Malibu's own accelerometer. If that reading comes over CAN (plausible — many cars broadcast ESC/traction-control accelerometer data, the same way OnStar GPS is CAN-based here), this entire sprint may be unnecessary: it's just another DBC entry, already captured for free by Sprint 2's capture-everything logger. This sprint as written below assumes a dedicated physical IMU wired to the Pi over I2C/SPI. Confirm which before starting.
+**Decided 2026-09-23: confirmed CAN-based, this sprint deferred as written.** The Malibu's accelerometer is on the CAN bus, confirmed. You also have a dedicated external IMU, deliberately not being wired up yet, same "make it work first" reasoning as Sprint 4's GPS. So the near-term accelerometer data is just another DBC entry, already captured for free by Sprint 2's capture-everything logger — no I2C/SPI bring-up, no dedicated entry point, none of the tasks below apply yet. This sprint as written (dedicated physical IMU wired to the Pi) stays ready for whenever the external sensor is actually wired up, likely once the raw CAN accelerometer proves insufficient (lower rate, coarser resolution, or missing an axis the physical IMU would have).
 **Required for Phase 1:** No (stretch)
 **Depends on:** Sprint 1 (timestamp convention), Sprint 3 (session runner)
 **Effort:** S–M
@@ -60,6 +60,6 @@ The brief doesn't name an IMU, and I don't know what you have. The interface (I2
 
 ## Open questions for you
 
-1. Which IMU do you have, and how is it connected?
-2. Where is it mounted and in what orientation?
-3. Any minimum sample rate you need?
+1. ~~Which IMU do you have, and how is it connected?~~ **Answered 2026-09-23:** you have one, but it's deliberately not being wired up yet (see the decision note above).
+2. Where is it mounted and in what orientation? (needed whenever it does get wired up)
+3. Any minimum sample rate you need? (same)

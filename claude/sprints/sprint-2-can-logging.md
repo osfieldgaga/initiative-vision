@@ -142,7 +142,7 @@ Log the already-identified CAN signals from the 2014 Malibu with per-record time
 3. ~~Log raw frames only, or also a decoded signals CSV?~~ **Answered:** raw, capture-everything by default (see Progress note above) — decoding is DBC-driven and offline-only, never part of the live logger.
 4. Where will the car tap be (OBD-II port or elsewhere)?
 5. Can I get a real drive capture to test against, or will there be one from you during the sprint?
-6. **New 2026-09-23:** you mentioned the car's own accelerometer, to be used alongside OnStar GPS. If that's a vehicle CAN signal (e.g. from the ESC/traction-control system, the way OnStar GPS is), it needs nothing beyond a DBC entry — it's already captured by this logger's capture-everything default, and Sprint 5 (currently written for a dedicated I2C/SPI IMU you'd wire to the Pi yourself) would likely collapse into this sprint instead. If it's a separate physical sensor, Sprint 5 stands as written. Confirm which before Sprint 5 starts.
+6. ~~Is the car's accelerometer a CAN signal or a separate physical sensor?~~ **Answered 2026-09-23:** both GPS and accelerometer are confirmed CAN signals (OnStar GPS and the car's own accelerometer). You also have dedicated external GPS and IMU sensors, deliberately not being wired up yet — "make it work first, then improve it": exercising the AWS post-processing pipeline end to end matters more right now than position/motion accuracy. So Sprints 4 and 5, in their near-term form, reduce to DBC entries decoded from this sprint's raw CAN log — no new hardware, no new live process. See `sprint-4-gps-optional.md` and `sprint-5-imu-optional.md`.
 
 ## Hand-off to Sprint 3
 

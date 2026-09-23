@@ -5,6 +5,8 @@
 **Depends on:** Sprint 2's OnStar finding (`docs/onstar-gps-findings.md`) and Sprint 3's session runner
 **Effort:** S if OnStar works, M if a GPS module is needed
 
+**Decided 2026-09-23: Path A, confirmed.** OnStar GPS is on the CAN bus — you have a dedicated external GPS module too, but are deliberately not wiring it up yet ("make it work first, then improve it": position accuracy matters less than getting the AWS pipeline exercised end to end). So this sprint, for now, needs no new hardware and no new live process at all — it's a decoder over Sprint 2's already-captured raw CAN log (once the DBC covers the OnStar IDs), per Path A below. Path B (the external GPS module) stays written up and ready, for whenever accuracy actually becomes the bottleneck.
+
 ## Goal
 
 Log geolocation with timestamps, following the same convention as frame capture and CAN. Raw position only.
@@ -63,5 +65,5 @@ Path B extras:
 
 ## Open questions for you
 
-1. Is there GPS hardware on hand, or would Path B need a purchase?
-2. If Path B: do you want GPS-derived UTC and/or PPS used to discipline the clock? That's a change to the Sprint 1 convention, so it needs your call.
+1. ~~Is there GPS hardware on hand, or would Path B need a purchase?~~ **Answered 2026-09-23:** you have a dedicated external GPS module, deliberately not being wired up yet — Path A (OnStar over CAN) is the near-term plan.
+2. If Path B ever happens: do you want GPS-derived UTC and/or PPS used to discipline the clock? That's a change to the Sprint 1 convention, so it needs your call.

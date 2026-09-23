@@ -1,9 +1,13 @@
-"""Record CAN frames into a new session directory.
+"""Record CAN frames into a session directory.
 
-    # fake bus, anywhere
+    # fake bus, anywhere -- its own new session
     python -m ivision.can.record --source fake --duration 10
-    # real interface, on the Pi (bring the interface up first, see below)
-    python -m ivision.can.record --source socketcan --interface can0 --duration 60
+
+    # real interface, on the Pi (bring the interface up first, see below),
+    # joining a session frames.record already started for this drive
+    python -m ivision.frames.record --source picamera2 --duration 600 &
+    python -m ivision.can.record --source socketcan --interface can0 \\
+        --session sessions/<the frame session's directory> --duration 600
 
 Before the real interface run, bring the interface up in listen-only mode
 (a kernel/controller-level guarantee that this process can never transmit,
@@ -12,11 +16,14 @@ in addition to the fact that nothing in this package ever calls send()):
     sudo ip link set can0 type can bitrate 500000 listen-only on
     sudo ip link set can0 up
 
-This process is independent of frame recording -- run both at once (two
-commands, two session directories) to capture a synchronized drive. See
-``can/pipeline.py``'s module docstring for why that needs no extra
-reconciliation step: both streams timestamp with the same system-wide
-CLOCK_MONOTONIC.
+This process is independent of frame recording -- it can run standalone
+(its own session, ``--out``) or, more usefully for a real drive, join a
+session frame capture already created (``--session``), so ``can.csv`` ends
+up alongside ``frames.csv`` in one folder. Either way needs no clock
+reconciliation step to line the two streams up: see ``can/pipeline.py``'s
+module docstring for why -- both timestamp with the same system-wide
+CLOCK_MONOTONIC. ``Session.flush()`` (``session.py``) is what makes sharing
+one manifest between two independent processes safe.
 """
 
 from __future__ import annotations
@@ -75,7 +82,10 @@ def status_loop(recorder: CanRecorder, every_s: float, stop: threading.Event) ->
 
 
 def record_one(source, out_dir, args, duration=None, status_every: float = 5.0):
-    session = Session.create(out_dir)
+    if getattr(args, "session", None):
+        session = Session.attach(args.session)
+    else:
+        session = Session.create(out_dir)
     recorder = make_recorder(session, source, args)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -99,7 +109,13 @@ def record_one(source, out_dir, args, duration=None, status_every: float = 5.0):
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Record CAN frames into a session.")
     add_can_args(parser)
-    parser.add_argument("--out", default="sessions", help="directory holding sessions")
+    parser.add_argument("--out", default="sessions", help="directory holding sessions "
+                        "(ignored if --session is given)")
+    parser.add_argument("--session", default=None,
+                        help="join an existing session directory (e.g. one frames.record "
+                             "already created for this drive) instead of creating a new one, "
+                             "so can.csv lands alongside frames.csv in one folder. That "
+                             "session must already exist -- start frames.record first")
     parser.add_argument("--duration", type=float, default=None, help="seconds; default: until Ctrl-C")
     parser.add_argument("--status-every", type=float, default=5.0,
                         help="seconds between status lines (0 = off)")

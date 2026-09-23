@@ -144,7 +144,7 @@ class Recorder:
         self._refresh_camera_manifest()
 
     def _refresh_camera_manifest(self) -> None:
-        self.session.manifest["camera"].update(self.source.describe())
+        self.session.update_camera(**self.source.describe())
         self.session.flush()
 
     def request_stop(self) -> None:

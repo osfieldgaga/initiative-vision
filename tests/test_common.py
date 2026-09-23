@@ -147,8 +147,12 @@ class SessionTest(unittest.TestCase):
     def test_manifest_write_is_atomic_no_tmp_left(self):
         s = Session.create(self.base)
         s.flush()
+        # session.json.lock is a legitimate, permanent artifact (see flush()'s
+        # docstring -- it's what makes sharing a session across two processes
+        # safe), not a leftover; only *.tmp must never survive a flush.
         self.assertEqual(
-            sorted(p.name for p in s.root.iterdir()), ["frames", "session.json"]
+            sorted(p.name for p in s.root.iterdir()),
+            ["frames", "session.json", "session.json.lock"],
         )
         json.loads(s.manifest_path.read_text())  # parses
 

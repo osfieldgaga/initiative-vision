@@ -57,7 +57,7 @@ A session directory recorded on the Pi 3B gets to S3 completely and verifiably, 
 ## Risks
 
 - **The bandwidth math may make upload from the Pi impractical** at the chosen frame rate and resolution. The measurement task is there to find out early. Alternatives are moving the storage medium or doing the upload from a laptop or other machine.
-- **Confirmed concretely 2026-09-23, not just hypothetical:** the phone hotspot (measured while testing Phase 3's live-stream feasibility) does ~8.6 Mbps upload and has a 35GB/month high-speed data cap before throttling. Against this sprint's own 11-22 GB/hour-of-driving estimate, a single hour of driving could consume 31-63% of the *entire monthly allowance* in one upload, and would take multiple hours to transfer at that speed. **The phone hotspot is very likely not viable for this sprint's upload** — home Wi-Fi or Ethernet is the realistic path, which answers part of open question 3 below. See `claude/Initiative Vision 1 — Phase 3 (Real-Time ADAS) Project Description.md`'s "Open questions" section for the raw measurements.
+- **Resolved 2026-09-23:** the phone hotspot (measured while testing Phase 3's live-stream feasibility) does ~8.6 Mbps upload and has a 35GB/month high-speed data cap before throttling. Against this sprint's own 11-22 GB/hour-of-driving estimate, a single hour of driving could have consumed 31-63% of the *entire monthly allowance* in one upload. Not a concern in practice: full-session upload always goes over home Wi-Fi (no data cap there), confirmed by you — the hotspot is reserved for Phase 3's live stream only, which is small enough not to matter (see the Phase 3 doc). Measurement task below still worth doing on home Wi-Fi itself, since its own throughput hasn't been measured yet.
 - **Credentials on a car-mounted device.** Mitigated with a narrow IAM policy, but never fully removed.
 - **Scope creep toward Phase 2.** Anything that reads or interprets the data belongs on the AWS side.
 - **Cost:** storage, requests (many small objects cost more), and data transfer. I'll show an estimate before anything is provisioned.
@@ -66,5 +66,5 @@ A session directory recorded on the Pi 3B gets to S3 completely and verifiably, 
 
 1. ~~Keep out / bring in / minimal?~~ Answered: bring in.
 2. AWS account, region and bucket: existing or new? Who creates them?
-3. How does the Pi get network access after a drive (home Wi-Fi, phone hotspot, Ethernet)? **Partially answered 2026-09-23:** phone hotspot looks impractical for full-session upload given the 35GB/month cap and measured ~8.6Mbps (see Risks above) — leaning toward home Wi-Fi/Ethernet, needs your confirmation.
+3. ~~How does the Pi get network access after a drive?~~ **Answered 2026-09-23: home Wi-Fi, no data cap to worry about.** The phone hotspot is reserved for Phase 3's live low-rate stream only (see Risks above and the Phase 3 doc) — full-session upload always goes over home Wi-Fi.
 4. Is tar-chunking of frame files for transport acceptable?

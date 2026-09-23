@@ -1,6 +1,8 @@
 # Sprint 5 — IMU Logging (optional)
 
 **Status:** Planned, awaiting your approval. Only start after Sprint 3 (or earlier if you choose. It needs only the Sprint 1 convention).
+
+**Open question raised 2026-09-23 (see `sprint-2-can-logging.md`'s open question 6):** you mentioned using the Malibu's own accelerometer. If that reading comes over CAN (plausible — many cars broadcast ESC/traction-control accelerometer data, the same way OnStar GPS is CAN-based here), this entire sprint may be unnecessary: it's just another DBC entry, already captured for free by Sprint 2's capture-everything logger. This sprint as written below assumes a dedicated physical IMU wired to the Pi over I2C/SPI. Confirm which before starting.
 **Required for Phase 1:** No (stretch)
 **Depends on:** Sprint 1 (timestamp convention), Sprint 3 (session runner)
 **Effort:** S–M

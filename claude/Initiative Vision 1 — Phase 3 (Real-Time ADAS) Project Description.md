@@ -16,7 +16,7 @@ Phase 3 adds a new path alongside Phase 1's existing full-res logging; it does n
 
 Phase 1 already proved 30 fps capture/encode is achievable on the Pi 3B at a sane resolution. That is not the constraint here. The constraint is the WAN hop: a phone hotspot's cellular link typically runs 50–150 ms round-trip under good signal, and spikes far higher under poor signal, before AWS inference time or the trip back are even counted.
 
-**Working target: under 500 ms glass-to-alert**, end to end (frame capture → upload → inference → alert delivered). That's roughly human reaction time, so it's the threshold for the demo to *feel* real-time even though it isn't safety-certified real-time. Treat it as a number to measure against, not a number to assume — the first thing built here should be a latency-measuring harness, before any ADAS logic, so every later design choice is judged against real numbers instead of guesses.
+**Working target: under ~2 seconds glass-to-alert is acceptable, under 500 ms is a bonus, not a requirement** (confirmed with you 2026-09-23 — "delayed or lagging behind by a second or two is acceptable"). This significantly loosens the design constraints below: a persistent WebSocket/MQTT connection is still good practice, but simpler polling would likely also clear a 2-second bar, so it's no longer a load-bearing decision. Still worth measuring rather than assuming — the first thing built here should be a latency-measuring harness, before any ADAS logic, so later choices are judged against real numbers.
 
 ## Architecture
 
@@ -25,14 +25,14 @@ flowchart LR
   A[Pi: live sampler<br/>downsampled, low-res frames<br/>5-10 fps] --> B[Persistent connection<br/>WebSocket or AWS IoT Core/MQTT]
   B --> C[AWS: lightweight inference<br/>lane lines, obstacles]
   C --> D[Alert channel back down]
-  D --> E[Pi: local alert output<br/>buzzer/speaker/small screen]
+  D --> E[Pi: renders alert on its own desktop<br/>viewed live over VNC]
   F[Pi: full-res frames + CAN<br/>Phase 1 logging, unchanged] -.no dependency.-> A
 ```
 
 Two deliberate choices worth calling out:
 
 1. **A separate, small, low-rate stream for live inference — never the full-res logging path.** Full-res frames stay exactly as Phase 1 built them (lossless, disk-only, for later training data). The live path sends its own aggressively downscaled frames (e.g. 320×240) at a lower rate than capture (5–10 fps is probably enough — see the latency budget above). This keeps the WAN hop cheap and means the two goals never compete for bandwidth or CPU.
-2. **A persistent connection, not per-frame HTTP.** Repeated TCP/TLS handshakes per frame add latency that's pure waste on an already-variable cellular link. A WebSocket or AWS IoT Core (MQTT) gives a duplex channel: frames up, alerts down, one connection.
+2. **A persistent connection, not per-frame HTTP.** Repeated TCP/TLS handshakes per frame add latency that's pure waste on an already-variable cellular link. Given the relaxed ~2s latency budget (see above), this is now a nice-to-have rather than load-bearing — but still the simpler thing to build correctly once, so still the default: a WebSocket or AWS IoT Core (MQTT) gives a duplex channel, frames up and alerts down on one connection.
 
 **Worth deciding early: does lane departure need the cloud round-trip at all?** Classical lane detection (Canny edges + a region-of-interest mask + Hough line transform) is cheap enough that the Pi 3B could plausibly run it locally, skipping the WAN hop entirely for arguably the single most latency-sensitive feature. If that holds up under measurement, the architecture splits: lane departure runs on-Pi (near-zero latency), while the cloud path is reserved for the genuinely GPU/model-shaped work (obstacle and pedestrian detection). This is exactly the "make it work first" instinct — try the cheap local version before building the expensive networked one — and it directly attacks the one thing this whole phase is bottlenecked on.
 
@@ -51,12 +51,12 @@ Two deliberate choices worth calling out:
 ## Model and compute choices
 
 - **Lane detection:** classical OpenCV, no trained model, candidate for on-Pi execution (see Architecture).
-- **Obstacle/pedestrian detection:** a lightweight pretrained detector (small YOLO variant), served from a modest EC2 instance — **spun up only during actual test/demo windows**, not left running continuously, to conserve the $108 AWS credit budget shared with Phase 2. Lambda's cold-start latency is a poor fit for a sub-500ms budget; SageMaker's a heavier lift than this needs.
+- **Obstacle/pedestrian detection:** a lightweight pretrained detector (small YOLO variant), served from a modest EC2 instance — **spun up only during actual test/demo windows**, not left running continuously, to conserve the AWS credit budget shared with Phase 2 (amount still to be confirmed, see open questions). Lambda's cold-start latency is a poor fit even for the relaxed ~2s budget above; SageMaker's a heavier lift than this needs.
 - **Reuse with Phase 2:** the same lightweight models built here double as Phase 2's "cheap triage" stage (the Perception step in its agentic loop). This is a real argument for attempting Phase 3 even under time pressure — the model work isn't wasted if the live-demo integration doesn't fully land; it still improves Phase 2's triage.
 
 ## Alert delivery
 
-Recommend the Pi surfaces alerts itself (buzzer, LED, small screen, or speaker) rather than routing the alert back through the phone to somewhere else — that would be a second WAN hop this phase doesn't need. This needs a small hardware addition beyond what Phase 1 uses; see open questions.
+**Decided 2026-09-23: VNC into the Pi, alert rendered on its own desktop.** No new hardware needed — `wayvnc` is already running on the Pi as a service (confirmed during the concurrent-load test on 2026-09-23). The Pi renders a simple full-screen or overlay window whenever an alert arrives (a colored banner via a plain OpenCV `imshow` window, or similar), and whoever's watching over VNC sees it live. Still only one WAN hop (AWS → Pi) either way — the VNC session itself, if viewed from a device also on the phone's hotspot network, doesn't add a second cellular round-trip.
 
 ## Non-goals
 
@@ -70,7 +70,7 @@ Phase 2's own timeline runs Sep 22 → Oct 26 with week 5 (Oct 20) held as buffe
 
 ## Open questions
 
-- [ ] What's the phone hotspot's actual data plan/bandwidth situation — any cap that matters for a continuous low-res upload?
-- [ ] What's available for Pi-side alert output (buzzer, small screen, speaker), or does something need to be bought?
-- [ ] Does this need to survive an actual drive, or is "works reliably in a parking lot for the demo video" the real bar? This changes how much latency/robustness work is actually justified.
-- [ ] Same AWS account/credit budget as Phase 2 — how much of the $108 is safe to earmark here versus reserved for Phase 2's EC2/inference needs?
+- [x] **Alert output hardware:** VNC into the Pi, no new hardware — see "Alert delivery" above.
+- [x] **Robustness bar:** confirmed 2026-09-23 — must be usable on an actual drive, not just a parking-lot demo, but a 1-2 second lag is acceptable. This is reflected in the relaxed ~2s latency target above.
+- [ ] **Hotspot data cap:** unknown ("honestly idk"). Before finalizing a frame rate/resolution for the live stream, measure it directly rather than guessing: run a sustained upload test over the actual phone hotspot for a few minutes at the candidate rate (e.g. 320×240 JPEG at 5-10 fps) and watch for throttling or a hard cap, not just average throughput — many phone plans throttle hard after a threshold rather than cutting off outright, which would show up as rising latency more than failed uploads. Worth doing early since it directly decides the live stream's resolution/rate.
+- [ ] **AWS credit budget:** unknown ("let's find out"). I can't check this myself — no AWS credentials, per the Phase 2 "I drive, you prepare" arrangement. To check: AWS Console → **Billing and Cost Management** → **Credits** (shows remaining credit balance directly), and **Cost Explorer** or **Billing → Bills** to see what Phase 2 work has spent so far. Worth also setting up a **Budget** (Billing → Budgets → Create budget) with an email alert at, say, 75% of the $108 — cheap insurance against an always-on EC2 instance quietly draining the whole balance before Phase 2's own AWS work is done. Once you have the numbers, we can allocate: Phase 3's EC2 inference instance only needs to run during actual test/demo windows (see "Model and compute choices" above), so its realistic cost is probably small relative to Phase 2's — but "probably" isn't a number, worth confirming before committing time to building this.

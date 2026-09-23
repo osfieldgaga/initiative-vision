@@ -12,7 +12,7 @@ PYTHONPATH=src python3 -m ivision.frames.record --source picamera2 --width 1280 
 
 This ran a full 10-minute continuous recording with **zero dropped frames** (disk or encoder) and peaked at 78.4°C, well under the Pi's 85°C throttle cap, and a 26-minute cool-down-cycled recording (`cycle.py`) with the same clean result across four chunks. Higher resolutions (1640x1232, 1080p) both hit thermal throttling and dropped frames on this Pi 3B even with a heatsink fitted — see the doc for what was tried and why it was rejected.
 
-Also see `docs/timestamp-convention.md` (needs sign-off) for the timing rules every later stream must follow.
+Also see `docs/timestamp-convention.md` (needs sign-off) for the timing rules every later stream must follow, and `docs/walkthrough/sprint-1-frames.md` for a full explanation of how the code works, including a minimal ~40-line reference version and why every piece of hardening beyond it exists.
 
 ## What works today (Sprint 1, nearly done)
 

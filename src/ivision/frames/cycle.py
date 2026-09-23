@@ -34,7 +34,6 @@ import sys
 import time
 from pathlib import Path
 
-from ..session import Session
 from . import record
 
 

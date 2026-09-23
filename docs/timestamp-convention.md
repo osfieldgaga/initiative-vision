@@ -41,12 +41,15 @@ This is only as accurate as `realtime_ns` was at session start. If the Pi's cloc
 - On this Pi, `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC` agree to within 0.01 ms (no suspend has ever happened, as expected).
 - Frame-to-frame timing is stable to within about ±12 µs of the nominal interval at 30 fps (measured on a 640×480 session; see `capture-performance.md`).
 
+**Verified, from a real kernel on the Pi (2026-09-23):**
+- **CAN (Sprint 2):** SocketCAN's kernel receive timestamp (`SO_TIMESTAMPNS`) is on **`CLOCK_REALTIME`**, *not* `CLOCK_MONOTONIC` — a different clock than the camera's `SensorTimestamp`. Confirmed by reading it back alongside `time.time_ns()`/`time.monotonic_ns()`/`CLOCK_BOOTTIME` at the moment of receipt on a real vcan0 socket (see `can/source.py` and the scratch probe this was measured with). Because of this, `can/source.py` does **not** use the kernel's timestamp as a CAN frame's primary `timestamp_ns` — it stamps every frame with its own `time.monotonic_ns()` read, taken immediately after `recvmsg()` returns, exactly like every other stream. The kernel's raw value is kept alongside it as `kernel_realtime_ns`, for measuring the actual read-latency gap on real hardware under real load, not for use as the primary timestamp.
+- **CAN-to-frame synchronization:** solved by construction, not by a conversion step. `CLOCK_MONOTONIC` is a single, system-wide clock on Linux — shared identically by every process on the machine, not per-process. A frame-recording process and a CAN-recording process running at the same time on the same Pi therefore already share one time axis: `frame.timestamp_ns` and `can_frame.timestamp_ns` are directly comparable with zero reconciliation, even though each stream writes to its own session directory. This only holds because both recorders run on the same machine — the on-vehicle case here.
+
 **Not yet verified — each later sprint must check this for its own source before assuming it:**
-- **CAN (Sprint 2):** SocketCAN's receive timestamp needs its own check. It may be on `CLOCK_MONOTONIC`, or on a hardware timestamp with a different reference; this has not been measured. Sprint 2 must confirm which, and measure the offset between it and the camera's timeline (a physical event visible in both streams is one way).
 - **GPS (Sprint 4):** if a dedicated GPS module is used, its NMEA/PPS timing has its own considerations (see `sprint-4-gps-optional.md`).
 - **IMU (Sprint 5):** depends entirely on which sensor and interface end up being used.
 
-Until those are checked, don't assume any other stream's raw timestamp shares the camera's clock. Convert everything to `CLOCK_MONOTONIC` explicitly at the point each stream is read, the way the camera source already does, rather than assuming the underlying driver's timestamp already lines up.
+Until those are checked, don't assume any other stream's raw timestamp shares the camera's clock. Convert everything to `CLOCK_MONOTONIC` explicitly at the point each stream is read, the way the camera and CAN sources already do, rather than assuming the underlying driver's timestamp already lines up.
 
 ## Why not `CLOCK_REALTIME` (UTC) directly
 

@@ -1,9 +1,65 @@
 # Sprint 2 — CAN Logging (read-only)
 
-**Status:** Planned, awaiting your approval
+**Status:** In progress
 **Required for Phase 1:** Yes
 **Depends on:** Sprint 1 (approved timestamp convention and session/manifest format)
 **Effort:** M–L
+
+## Progress (2026-09-23)
+
+Built and verified for real against a `vcan0` interface on the Pi (bench-first,
+per task B, before any real hardware is involved):
+
+- `src/ivision/can/source.py` — `SocketCanSource` (raw `CAN_RAW` socket, standard
+  + extended frame decode, optional kernel ID filters, never calls `send()`) and
+  `FakeCanSource` for desktop/CI testing. 29 tests, all passing on the desktop
+  (6 real-interface tests skip without `vcan0`) and for real on the Pi.
+- `src/ivision/can/pipeline.py` — `CanRecorder`: capture thread → bounded queue →
+  writer thread, reusing `DurableCsvWriter`/`Session` from Sprint 1. Unlike frame
+  capture, a quiet bus never ends the run (see "Ignition/sleep behaviour" risk,
+  below) — there is deliberately no stall timeout.
+- `src/ivision/can/record.py` — its own CLI entry point (task C), no shared state
+  with frame capture beyond `Session`/clock helpers.
+- End-to-end smoke test on the Pi against flooded `vcan0` traffic: 1770 frames
+  captured/written, 0 drops, verified against kernel interface counters.
+
+**Two findings that resolve open items above:**
+
+1. **Timestamping (row 3 of the decisions table):** measured, not assumed.
+   SocketCAN's kernel receive timestamp (`SO_TIMESTAMPNS`) is on
+   `CLOCK_REALTIME`, not `CLOCK_MONOTONIC`. Every `CanFrame` is stamped with
+   `time.monotonic_ns()` (this process's own read, right after `recvmsg()`
+   returns) as the primary timestamp, matching every other stream's
+   convention — the kernel's raw value is kept as a secondary
+   `kernel_realtime_ns` field for measuring real-hardware read latency later.
+2. **Task E (clock alignment):** resolved by construction, not by measuring an
+   offset. `CLOCK_MONOTONIC` is one system-wide clock shared by every process
+   on the Pi. A frame-recording process and a CAN-recording process running at
+   the same time already share one time axis — `timestamp_ns` in both streams
+   is directly comparable, no reconciliation step needed. Written up in
+   `docs/timestamp-convention.md`.
+
+**One negative result, documented rather than silently dropped:** `SO_RXQ_OVFL`
+(the kernel mechanism meant to report *this process's own socket* receive-buffer
+overflowing) was tested against a deliberately tiny, deliberately overflowed
+`vcan0` receive buffer and reported nothing, even though the overflow was real
+(500 frames sent, 3 received). Not wired into the logger since it could not be
+verified to work at all — worth revisiting on real hardware via a future
+`can_probe.py`. In its place, `pipeline.py` logs kernel *interface* counters
+(`/sys/class/net/<iface>/statistics/rx_dropped` etc., a different, lower layer —
+this is what would actually catch the "SPI CAN controller's small RX FIFO
+overflows" risk called out below) at start and stop of every session, and its
+own queue-drop counter catches the case where the writer/disk falls behind the
+capture thread.
+
+**One design decision made ahead of your DBC arriving, flagged for your
+confirmation:** `SocketCanSource` defaults to capturing every arbitration ID
+(`can_filters=None`), not just a pre-identified list. This is a deliberate
+divergence from row 3 of the decisions table below ("Hardware acceptance
+filters ... for the known IDs") — CAN bandwidth is trivial next to the video
+stream, so logging everything means a newly-decoded signal just needs a DBC
+update, never a re-drive. Hardware ID filters are still supported
+(`can_filters=[(id, mask), ...]`) for the rare case bus load needs cutting.
 
 ## Goal
 
@@ -40,14 +96,14 @@ Log the already-identified CAN signals from the 2014 Malibu with per-record time
 - [ ] Identify the salvaged CAN hardware (SPI controller like MCP2515, or a USB adapter) and its transceiver voltage/wiring. Document wiring and the Pi overlay/config needed
 - [ ] Bring up `can0` at the correct bitrate in listen-only mode
 - [ ] Check the physical tap: OBD-II port vs a different tap point. **Confirm the identified signals are actually visible there**, since some vehicles filter or gateway traffic at the OBD port
-- [ ] Bench test without the car first: virtual CAN (`vcan`) and a replay of any existing captures, so the software is proven before it goes near the vehicle
+- [x] Bench test without the car first: virtual CAN (`vcan`) and a replay of any existing captures, so the software is proven before it goes near the vehicle — done against `vcan0` on the Pi (29 tests + an end-to-end flood smoke test)
 
 ### C. Logger
-- [ ] Reader that pulls frames off `can0` into a bounded queue, with a separate writer, as in Sprint 1
-- [ ] CSV format with the same timestamp column definition and session directory layout as the frame log
-- [ ] Track and log receive-side loss: kernel/socket overflow counters and controller overflow flags, written to the manifest at stop. A bus logger that silently loses frames is worse than useless
-- [ ] Run and stop independently of frame capture: its own entry point, no shared state or imports beyond the common timestamp/session helpers
-- [ ] Graceful stop and crash-safety matching Sprint 1
+- [x] Reader that pulls frames off `can0` into a bounded queue, with a separate writer, as in Sprint 1
+- [x] CSV format with the same timestamp column definition and session directory layout as the frame log
+- [x] Track and log receive-side loss: kernel *interface* counters and this pipeline's own queue-drop counter, written to the manifest at stop (see Progress note above for why not `SO_RXQ_OVFL`)
+- [x] Run and stop independently of frame capture: its own entry point, no shared state or imports beyond the common timestamp/session helpers
+- [x] Graceful stop and crash-safety matching Sprint 1
 
 ### D. Validation against the known signals
 - [ ] `verify_can_log` script: timestamps monotonic, per-ID message rates match the expected rates, no unexplained gaps, drop counters reported
@@ -55,7 +111,7 @@ Log the already-identified CAN signals from the 2014 Malibu with per-record time
 - [ ] Measure achievable message throughput and CPU cost at the car's real bus load
 
 ### E. Clock alignment measurement
-- [ ] Quantify the offset and jitter between CAN receive timestamps and the frame sensor timestamps on the Pi, and document how it maps under the convention. A rough method: a physical event visible in both streams. Record the measured error bound in `docs/timestamp-convention.md`
+- [x] Quantify the offset and jitter between CAN receive timestamps and the frame sensor timestamps on the Pi, and document how it maps under the convention — resolved by construction (see Progress note above), not by measuring an offset: both streams share the same system-wide `CLOCK_MONOTONIC`. Documented in `docs/timestamp-convention.md`
 
 ### F. OnStar GPS question (settles Sprint 4)
 - [ ] Decide whether the OnStar GPS signals can be decoded as usable lat/lon, and record: update rate, resolution, behaviour with no fix or ignition-off, and whether they're reachable at the tap point you use

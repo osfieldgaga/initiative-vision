@@ -15,7 +15,7 @@ from __future__ import annotations
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterator, Protocol
 
 
@@ -43,6 +43,54 @@ class FrameSource(Protocol):
 
     # Optional: ``encode(frame) -> bytes``. If present, the recorder calls it
     # to turn a raw frame into file bytes (inline or in a worker pool).
+
+
+class IntervalSource:
+    """Wraps another source and keeps only one frame every ``interval_s``
+    seconds, discarding the rest before they ever reach the encoder/writer.
+
+    For a calibration shoot: move the checkerboard into a new position,
+    wait, repeat -- you want a handful of well-separated stills, not a
+    continuous 30fps stream of near-duplicate frames. The wrapped source
+    still runs at whatever rate it's configured for internally (its own
+    ``--fps``); this just samples it, so a lower underlying fps reduces
+    wasted camera cycles but isn't required for a short session.
+
+    ``seq`` is renumbered densely (0, 1, 2, ... for frames actually kept),
+    not the wrapped source's own sequence numbers -- so the kept set's
+    ledger has no gaps to explain.
+    """
+
+    def __init__(self, source: FrameSource, interval_s: float, clock_ns: Callable[[], int] = time.monotonic_ns):
+        self.source = source
+        self.interval_s = interval_s
+        self._clock_ns = clock_ns
+        if hasattr(source, "encode"):
+            self.encode = source.encode  # pass through so the pipeline still finds it
+
+    def describe(self) -> dict:
+        return {**self.source.describe(), "mode": "interval", "interval_s": self.interval_s}
+
+    def start(self) -> None:
+        self.source.start()
+
+    def stop(self) -> None:
+        self.source.stop()
+
+    def close(self) -> None:
+        self.source.close()
+
+    def frames(self) -> Iterator[Frame]:
+        interval_ns = round(self.interval_s * 1e9)
+        next_due = self._clock_ns()
+        seq = 0
+        for frame in self.source.frames():
+            now = self._clock_ns()
+            if now < next_due:
+                continue  # too soon since the last kept frame: discard
+            next_due = now + interval_ns
+            yield replace(frame, seq=seq)
+            seq += 1
 
 
 def synthetic_jpeg(seq: int, payload_bytes: int = 2048) -> bytes:

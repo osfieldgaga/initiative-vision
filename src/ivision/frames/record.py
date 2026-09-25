@@ -23,7 +23,7 @@ from ..preflight import format_findings, run_preflight
 from ..session import Session
 from ..sysmon import SystemMonitor
 from .pipeline import Recorder
-from .source import FakeCameraSource
+from .source import FakeCameraSource, IntervalSource
 
 # -- shared argument definitions, reused by cycle.py so both tools stay in sync ----------
 
@@ -31,6 +31,12 @@ from .source import FakeCameraSource
 def add_camera_args(parser) -> None:
     parser.add_argument("--source", choices=["fake", "picamera2"], default="fake")
     parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument("--interval-s", type=float, default=None,
+                        help="keep only one frame every this many seconds, discarding the rest "
+                             "before encoding -- for a calibration shoot: move the checkerboard, "
+                             "wait, repeat. The camera still runs at --fps internally; this just "
+                             "samples it. Automatically raises --stall-timeout so normal gaps "
+                             "between kept frames aren't mistaken for a stalled camera")
     cam = parser.add_argument_group("camera options (picamera2 only)")
     cam.add_argument("--width", type=int, default=1640)
     cam.add_argument("--height", type=int, default=1232)
@@ -84,28 +90,43 @@ def resolve_encode_workers(args) -> None:
 
 def build_source(args):
     if args.source == "fake":
-        return FakeCameraSource(fps=args.fps)
-    try:
-        import picamera2  # noqa: F401  (checked up front so no empty session is left behind)
-    except ImportError:
-        raise SystemExit(
-            "picamera2 is not installed. On the Pi run: sudo apt install -y python3-picamera2\n"
-            "and use the system python3 (a virtualenv must be created with --system-site-packages)."
-        )
-    from .camera import PicameraSource
+        source = FakeCameraSource(fps=args.fps)
+    else:
+        try:
+            import picamera2  # noqa: F401  (checked up front so no empty session is left behind)
+        except ImportError:
+            raise SystemExit(
+                "picamera2 is not installed. On the Pi run: sudo apt install -y python3-picamera2\n"
+                "and use the system python3 (a virtualenv must be created with --system-site-packages)."
+            )
+        from .camera import PicameraSource
 
-    return PicameraSource(
-        width=args.width,
-        height=args.height,
-        fps=args.fps,
-        quality=args.quality,
-        sensor_mode=args.sensor_mode,
-        exposure_us=args.exposure_us,
-        analogue_gain=args.gain,
-        encoder=args.encoder,
-        rotate_deg=args.rotate,
-        queue={"default": None, "on": True, "off": False}[args.camera_queue],
-    )
+        source = PicameraSource(
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            quality=args.quality,
+            sensor_mode=args.sensor_mode,
+            exposure_us=args.exposure_us,
+            analogue_gain=args.gain,
+            encoder=args.encoder,
+            rotate_deg=args.rotate,
+            queue={"default": None, "on": True, "off": False}[args.camera_queue],
+        )
+    if args.interval_s:
+        source = IntervalSource(source, args.interval_s)
+    return source
+
+
+def resolve_stall_timeout(args) -> float | None:
+    """--stall-timeout's effective value: at least 3x --interval-s when both are
+    set, so the normal gap between kept calibration shots is never mistaken for
+    a stalled camera. An explicit --stall-timeout larger than that floor wins;
+    --stall-timeout 0 (off) is left off."""
+    stall_timeout = args.stall_timeout or None
+    if args.interval_s and stall_timeout is not None:
+        stall_timeout = max(stall_timeout, args.interval_s * 3)
+    return stall_timeout
 
 
 def make_recorder(session: Session, source, args) -> Recorder:
@@ -115,7 +136,7 @@ def make_recorder(session: Session, source, args) -> Recorder:
         queue_size=args.queue_size,
         fsync_files=args.fsync_files,
         encode_workers=args.encode_workers,
-        stall_timeout_s=args.stall_timeout or None,
+        stall_timeout_s=resolve_stall_timeout(args),
         encode_nice=args.encode_nice or None,
         fsync_interval_s=args.csv_fsync_interval,
     )

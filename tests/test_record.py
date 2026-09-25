@@ -21,6 +21,7 @@ class FakeArgs:
         self.fsync_files = False
         self.encode_workers = 0
         self.stall_timeout = 5.0
+        self.interval_s = None
         self.encode_nice = 10
         self.csv_fsync_interval = 1.0
         self.__dict__.update(kw)
@@ -84,6 +85,7 @@ class SharedArgsTest(unittest.TestCase):
         self.assertEqual(args.queue_size, 256)
         self.assertEqual(args.csv_fsync_interval, 1.0)
         self.assertEqual(args.rotate, 0)
+        self.assertIsNone(args.interval_s)
 
     def test_rotate_accepts_only_right_angles(self):
         for value in (0, 90, 180, 270):
@@ -115,6 +117,37 @@ class SharedArgsTest(unittest.TestCase):
         explicit = self.parse(["--source", "picamera2", "--encode-workers", "2"])
         record.resolve_encode_workers(explicit)
         self.assertEqual(explicit.encode_workers, 2)  # an explicit value is never overridden
+
+    def test_build_source_wraps_in_interval_source_when_set(self):
+        from ivision.frames.source import IntervalSource
+
+        args = self.parse(["--source", "fake", "--interval-s", "5"])
+        source = record.build_source(args)
+        self.assertIsInstance(source, IntervalSource)
+        self.assertEqual(source.interval_s, 5.0)
+
+    def test_build_source_no_wrapping_when_interval_s_unset(self):
+        from ivision.frames.source import IntervalSource
+
+        args = self.parse(["--source", "fake"])
+        source = record.build_source(args)
+        self.assertNotIsInstance(source, IntervalSource)
+
+    def test_resolve_stall_timeout_raised_for_a_long_interval(self):
+        args = self.parse(["--interval-s", "5"])  # default --stall-timeout is 5.0
+        self.assertEqual(record.resolve_stall_timeout(args), 15.0)  # 3x the interval
+
+    def test_resolve_stall_timeout_keeps_an_explicit_larger_value(self):
+        args = self.parse(["--interval-s", "5", "--stall-timeout", "60"])
+        self.assertEqual(record.resolve_stall_timeout(args), 60.0)
+
+    def test_resolve_stall_timeout_off_stays_off_even_with_interval(self):
+        args = self.parse(["--interval-s", "5", "--stall-timeout", "0"])
+        self.assertIsNone(record.resolve_stall_timeout(args))
+
+    def test_resolve_stall_timeout_unaffected_without_interval(self):
+        args = self.parse([])
+        self.assertEqual(record.resolve_stall_timeout(args), 5.0)
 
 
 class RecordOneTest(TmpCase):

@@ -5,11 +5,29 @@ undecoded on the device, decoding is a separate, rerunnable step).
     python -m ivision.can.decode sessions/<id> --dbc dbc/gm_global_a_powertrain.dbc
 
 Reads ``<session_dir>/can.csv``, decodes every row whose arbitration ID has a
-matching message in the DBC, and writes one CSV per decoded message under
-``<session_dir>/decoded/<MessageName>.csv`` (``timestamp_ns, seq``, then one
-column per signal). Rows whose ID has no DBC entry are counted, not silently
-dropped -- printed in the summary, so "how much of this bus is still
-unidentified" stays visible rather than quietly discarded.
+matching message in the DBC, and writes **one combined CSV**,
+``<session_dir>/decoded.csv``, alongside ``frames.csv``/``can.csv``/
+``system.csv`` -- one row per decodable CAN frame (same row count and order
+as the relevant rows of ``can.csv``), columns ``timestamp_ns, seq, message``
+plus every signal from every decoded message, unioned together.
+
+Signal columns are namespaced ``<MessageName>.<SignalName>`` (e.g.
+``PSCMSteeringAngle.SteeringWheelAngle``), not bare signal names -- several
+GM messages reuse the same signal name (``RollingCounter`` appears on at
+least three unrelated messages in this DBC), so a bare name would silently
+conflate different signals. Because every CAN frame is only ever one
+message, each row only has its own message's columns populated; every other
+message's columns are blank on that row. This is an honest reflection of
+the underlying data (one frame, one message) via a sparse table, not
+information loss -- filter by the ``message`` column to work with one
+message type at a time.
+
+Rows whose ID has no DBC entry are counted, not silently dropped -- printed
+in the summary, so "how much of this bus is still unidentified" stays
+visible rather than quietly discarded. They are not written as blank rows
+in ``decoded.csv`` (no signals to show for them, and at typical undecoded
+proportions that would mean hundreds of thousands of all-blank rows for no
+benefit).
 
 Needs ``cantools`` (``pip install ivision[decode]`` or plain ``pip install
 cantools``) -- not a dependency of anything else in this project.
@@ -20,18 +38,20 @@ The DBC has no direct longitudinal-accelerometer signal (GM's
 ``LateralAcceleration``, on ``EBCMVehicleDynamic``, is lateral only). Instead,
 for each of ``EBCMWheelSpdFront`` and ``EBCMWheelSpdRear`` independently, this
 averages that message's own left/right wheel speed pair into a
-``vehicle_speed_mps`` column, then differentiates consecutive samples (using
-each row's own logged ``timestamp_ns``, not an assumed fixed rate) into
-``longitudinal_accel_mps2``. Kept as two independent estimates -- front and
-rear are decoded from separate CAN messages arriving at separate times, not
-synchronized to the same instant -- rather than merged into one signal, so
-they can be cross-checked against each other: they should roughly agree if
-the DBC and this derivation are both right. This is a plain finite
-difference, nothing smoothed -- real speed samples are somewhat noisy
-discrete measurements, so treat the derivative as a first, "does this look
-physically sane" pass, not a clean signal. Filtering it is a real
-improvement to make later, once it's clear the raw version isn't enough --
-not something to build before that's actually known.
+``<MessageName>.vehicle_speed_mps`` column, then differentiates consecutive
+samples *of that message alone* (not interleaved with any other message's
+rows -- using each sample's own logged ``timestamp_ns``, not an assumed
+fixed rate) into ``<MessageName>.longitudinal_accel_mps2``. Kept as two
+independent estimates -- front and rear are decoded from separate CAN
+messages arriving at separate times, not synchronized to the same instant --
+rather than merged into one signal, so they can be cross-checked against
+each other: they should roughly agree if the DBC and this derivation are
+both right. This is a plain finite difference, nothing smoothed -- real
+speed samples are somewhat noisy discrete measurements, so treat the
+derivative as a first, "does this look physically sane" pass, not a clean
+signal. Filtering it is a real improvement to make later, once it's clear
+the raw version isn't enough -- not something to build before that's
+actually known.
 """
 
 from __future__ import annotations
@@ -49,16 +69,19 @@ def load_database(dbc_path):
     return cantools.database.load_file(dbc_path)
 
 
-def decode_session(session_dir, dbc_path, out_dir=None) -> dict:
-    """Decode <session_dir>/can.csv against dbc_path. Returns a summary dict
-    (also what the CLI prints); writes one CSV per decoded message name."""
+def decode_session(session_dir, dbc_path, out_path=None) -> dict:
+    """Decode <session_dir>/can.csv against dbc_path into one combined CSV.
+    Returns a summary dict (also what the CLI prints)."""
     db = load_database(dbc_path)
     session_dir = Path(session_dir)
-    out_dir = Path(out_dir) if out_dir is not None else session_dir / "decoded"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = Path(out_path) if out_path is not None else session_dir / "decoded.csv"
 
-    decoded_rows: dict = {}  # message name -> [(timestamp_ns, seq, {signal: value}), ...]
-    undecodable: Counter = Counter()  # (can_id, is_extended) -> row count
+    # Each entry: [timestamp_ns, seq, message_name, {signal_name: value}].
+    # Mutable in place (see _add_derived_longitudinal_accel) so derived
+    # columns land in the same rows without a second read/write pass.
+    decoded_rows: list = []
+    signals_by_message: dict = {}
+    undecodable: Counter = Counter()
     total_rows = 0
 
     with open(session_dir / "can.csv", newline="", encoding="utf-8") as f:
@@ -77,77 +100,78 @@ def decode_session(session_dir, dbc_path, out_dir=None) -> dict:
             except Exception:
                 undecodable[(can_id, is_extended)] += 1
                 continue
-            decoded_rows.setdefault(message.name, []).append(
-                (int(row["timestamp_ns"]), int(row["seq"]), signals)
-            )
+            decoded_rows.append([int(row["timestamp_ns"]), int(row["seq"]), message.name, signals])
+            signals_by_message.setdefault(message.name, set()).update(signals)
 
-    written = {}
-    for name, rows in decoded_rows.items():
-        rows.sort(key=lambda r: r[0])
-        signal_names = sorted({key for _, _, sigs in rows for key in sigs})
-        with open(out_dir / f"{name}.csv", "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["timestamp_ns", "seq", *signal_names])
-            for timestamp_ns, seq, sigs in rows:
-                writer.writerow([timestamp_ns, seq, *(sigs.get(s, "") for s in signal_names)])
-        written[name] = len(rows)
+    decoded_rows.sort(key=lambda r: r[0])
 
-    add_derived_longitudinal_accel(out_dir, "EBCMWheelSpdFront", "FLWheelSpd", "FRWheelSpd")
-    add_derived_longitudinal_accel(out_dir, "EBCMWheelSpdRear", "RLWheelSpd", "RRWheelSpd")
+    _add_derived_longitudinal_accel(decoded_rows, signals_by_message,
+                                     "EBCMWheelSpdFront", "FLWheelSpd", "FRWheelSpd")
+    _add_derived_longitudinal_accel(decoded_rows, signals_by_message,
+                                     "EBCMWheelSpdRear", "RLWheelSpd", "RRWheelSpd")
 
+    columns = [f"{msg}.{sig}" for msg in sorted(signals_by_message) for sig in sorted(signals_by_message[msg])]
+    # Precompute each column's (owning message, bare signal name) once, rather
+    # than re-deriving it from the string for every cell of every row.
+    column_owners = [col.split(".", 1) for col in columns]
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp_ns", "seq", "message", *columns])
+        for timestamp_ns, seq, msg_name, signals in decoded_rows:
+            cells = [signals.get(sig, "") if owner == msg_name else "" for owner, sig in column_owners]
+            writer.writerow([timestamp_ns, seq, msg_name, *cells])
+
+    decoded_counts = Counter(r[2] for r in decoded_rows)
     return {
         "total_rows": total_rows,
-        "decoded_messages": written,
+        "decoded_messages": dict(decoded_counts),
         "undecodable_ids": {f"0x{can_id:X}{'x' if ext else ''}": n
                             for (can_id, ext), n in undecodable.items()},
+        "out_path": str(out_path),
     }
 
 
-def add_derived_longitudinal_accel(out_dir: Path, message_name: str,
-                                    left_signal: str, right_signal: str) -> None:
-    """Rewrites <out_dir>/<message_name>.csv (already decoded by decode_session)
-    with two extra columns: vehicle_speed_mps (average of the two wheel
-    speeds, km/h -> m/s) and longitudinal_accel_mps2 (its derivative against
-    consecutive rows' own timestamps). A no-op if that message wasn't
-    decoded, or doesn't have both wheel-speed signals -- callable safely
-    regardless of which messages a given session actually contains."""
-    path = out_dir / f"{message_name}.csv"
-    if not path.exists():
+def _add_derived_longitudinal_accel(decoded_rows: list, signals_by_message: dict,
+                                     message_name: str, left_signal: str, right_signal: str) -> None:
+    """Mutates decoded_rows' signal dicts in place: for every row belonging to
+    message_name, adds vehicle_speed_mps and longitudinal_accel_mps2 --
+    computed from that message's own consecutive samples only, never
+    interleaved with any other message's rows. A no-op if message_name was
+    never decoded, or doesn't have both wheel-speed signals -- callable
+    safely regardless of which messages a given session actually contains."""
+    have = signals_by_message.get(message_name, set())
+    if left_signal not in have or right_signal not in have:
         return
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        rows = list(reader)
-    if left_signal not in fieldnames or right_signal not in fieldnames:
+    subset = [r for r in decoded_rows if r[2] == message_name]  # same dict objects, not copies
+    if not subset:
         return
 
-    speeds_mps = [(float(row[left_signal]) + float(row[right_signal])) / 2 / 3.6 for row in rows]
-    accel = [None]
-    for i in range(1, len(rows)):
-        dt_s = (int(rows[i]["timestamp_ns"]) - int(rows[i - 1]["timestamp_ns"])) / 1e9
-        accel.append((speeds_mps[i] - speeds_mps[i - 1]) / dt_s if dt_s > 0 else None)
-
-    new_fieldnames = [*fieldnames, "vehicle_speed_mps", "longitudinal_accel_mps2"]
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(new_fieldnames)
-        for row, speed, a in zip(rows, speeds_mps, accel):
-            writer.writerow([row[k] for k in fieldnames] + [round(speed, 4), round(a, 4) if a is not None else ""])
+    speeds_mps = [(r[3][left_signal] + r[3][right_signal]) / 2 / 3.6 for r in subset]
+    subset[0][3]["vehicle_speed_mps"] = round(speeds_mps[0], 4)
+    for i in range(1, len(subset)):
+        subset[i][3]["vehicle_speed_mps"] = round(speeds_mps[i], 4)
+        dt_s = (subset[i][0] - subset[i - 1][0]) / 1e9
+        if dt_s > 0:
+            subset[i][3]["longitudinal_accel_mps2"] = round((speeds_mps[i] - speeds_mps[i - 1]) / dt_s, 4)
+    signals_by_message[message_name] |= {"vehicle_speed_mps", "longitudinal_accel_mps2"}
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("session_dir", help="a session directory containing can.csv")
     parser.add_argument("--dbc", required=True, help="path to the .dbc signal definition file")
+    parser.add_argument("--out", default=None, help="output CSV path (default: <session_dir>/decoded.csv)")
     args = parser.parse_args(argv)
 
     try:
-        summary = decode_session(args.session_dir, args.dbc)
+        summary = decode_session(args.session_dir, args.dbc, out_path=args.out)
     except ImportError:
         print("cantools is not installed. Run: pip install cantools", file=sys.stderr)
         return 2
 
     print(f"total rows: {summary['total_rows']}")
+    print(f"wrote {sum(summary['decoded_messages'].values())} decoded rows to {summary['out_path']}")
     print("decoded messages:")
     for name, n in sorted(summary["decoded_messages"].items()):
         print(f"  {name}: {n} rows")

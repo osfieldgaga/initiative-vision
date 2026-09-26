@@ -11,16 +11,27 @@ matching message in the DBC, and writes **one combined CSV**,
 as the relevant rows of ``can.csv``), columns ``timestamp_ns, seq, message``
 plus every signal from every decoded message, unioned together.
 
+**Each row is a full snapshot, not just what changed.** Every column holds
+the most recently decoded value for that signal as of that row's timestamp
+-- carried forward ("last observation carried forward") from whichever
+earlier row last updated it -- not just the columns belonging to that row's
+own ``message``. So row N shows the complete, best-known state of every
+signal at that instant, the way you'd read a dashboard: e.g. a row where
+``message`` is ``PSCMSteeringAngle`` still shows the last-known
+``EBCMWheelSpdFront.FLWheelSpd``, even though this particular frame didn't
+touch it. A column stays blank only until that signal has been decoded at
+least once; the ``message`` column still says which signal(s) this exact
+row actually just updated, if you need that. One honest consequence of
+forward-filling asynchronous, multi-rate signals: a slow-updating signal
+(e.g. once a second) shows the *same* carried-forward value across many
+faster-updating rows in between -- that's not a bug, it's what "most
+recently known" genuinely means until the next real update arrives.
+
 Signal columns are namespaced ``<MessageName>.<SignalName>`` (e.g.
 ``PSCMSteeringAngle.SteeringWheelAngle``), not bare signal names -- several
 GM messages reuse the same signal name (``RollingCounter`` appears on at
 least three unrelated messages in this DBC), so a bare name would silently
-conflate different signals. Because every CAN frame is only ever one
-message, each row only has its own message's columns populated; every other
-message's columns are blank on that row. This is an honest reflection of
-the underlying data (one frame, one message) via a sparse table, not
-information loss -- filter by the ``message`` column to work with one
-message type at a time.
+conflate different signals.
 
 Rows whose ID has no DBC entry are counted, not silently dropped -- printed
 in the summary, so "how much of this bus is still unidentified" stays
@@ -111,16 +122,18 @@ def decode_session(session_dir, dbc_path, out_path=None) -> dict:
                                      "EBCMWheelSpdRear", "RLWheelSpd", "RRWheelSpd")
 
     columns = [f"{msg}.{sig}" for msg in sorted(signals_by_message) for sig in sorted(signals_by_message[msg])]
-    # Precompute each column's (owning message, bare signal name) once, rather
-    # than re-deriving it from the string for every cell of every row.
-    column_owners = [col.split(".", 1) for col in columns]
 
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["timestamp_ns", "seq", "message", *columns])
+        # Forward-fill: each row is the full current state of every signal,
+        # not just the ones this exact frame updated -- see the module
+        # docstring. last_known persists across rows on purpose.
+        last_known = {col: "" for col in columns}
         for timestamp_ns, seq, msg_name, signals in decoded_rows:
-            cells = [signals.get(sig, "") if owner == msg_name else "" for owner, sig in column_owners]
-            writer.writerow([timestamp_ns, seq, msg_name, *cells])
+            for sig_name, value in signals.items():
+                last_known[f"{msg_name}.{sig_name}"] = value
+            writer.writerow([timestamp_ns, seq, msg_name, *(last_known[col] for col in columns)])
 
     decoded_counts = Counter(r[2] for r in decoded_rows)
     return {

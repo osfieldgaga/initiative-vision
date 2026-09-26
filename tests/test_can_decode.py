@@ -110,7 +110,7 @@ class DecodeSessionTest(unittest.TestCase):
         out_rows = self.read_decoded(session)
         self.assertEqual([r["timestamp_ns"] for r in out_rows], ["1000000000", "2000000000"])
 
-    def test_multiple_message_types_share_one_file_with_blank_columns(self):
+    def test_multiple_message_types_share_one_file_each_row_a_full_snapshot(self):
         session = self.base / "session4"
         session.mkdir()
         rows = [
@@ -124,11 +124,16 @@ class DecodeSessionTest(unittest.TestCase):
         self.assertEqual(len(out_rows), 2)
         self.assertIn("TestSpeedMsg.SpeedLeft", out_rows[0])
         self.assertIn("TestOtherMsg.Value", out_rows[0])
-        # The TestSpeedMsg row has no TestOtherMsg data, and vice versa.
+        # Row 0: TestSpeedMsg just arrived, TestOtherMsg has never been seen yet.
         self.assertEqual(out_rows[0]["message"], "TestSpeedMsg")
+        self.assertAlmostEqual(float(out_rows[0]["TestSpeedMsg.SpeedLeft"]), 1.0)
         self.assertEqual(out_rows[0]["TestOtherMsg.Value"], "")
+        # Row 1: TestOtherMsg just arrived, but TestSpeedMsg's last value carries forward
+        # -- this is the whole point of a snapshot: it's not blank just because this
+        # particular frame wasn't a TestSpeedMsg.
         self.assertEqual(out_rows[1]["message"], "TestOtherMsg")
-        self.assertEqual(out_rows[1]["TestSpeedMsg.SpeedLeft"], "")
+        self.assertEqual(out_rows[1]["TestOtherMsg.Value"], "42")
+        self.assertAlmostEqual(float(out_rows[1]["TestSpeedMsg.SpeedLeft"]), 1.0)
 
     def test_colliding_signal_names_across_messages_stay_distinct_columns(self):
         session = self.base / "session5"
@@ -142,9 +147,27 @@ class DecodeSessionTest(unittest.TestCase):
         decode_session(session, self.dbc_path)
         out_rows = self.read_decoded(session)
         self.assertEqual(out_rows[0]["TestOtherMsg.Value"], "7")
-        self.assertEqual(out_rows[0]["TestCollidingNameMsg.Value"], "")
+        self.assertEqual(out_rows[0]["TestCollidingNameMsg.Value"], "")  # not seen yet
         self.assertEqual(out_rows[1]["TestCollidingNameMsg.Value"], "99")
-        self.assertEqual(out_rows[1]["TestOtherMsg.Value"], "")
+        self.assertEqual(out_rows[1]["TestOtherMsg.Value"], "7")  # carried forward, distinct column
+
+    def test_a_signal_not_yet_seen_stays_blank_until_its_first_update(self):
+        session = self.base / "session7"
+        session.mkdir()
+        rows = [
+            self.encode_row(0, 1_000_000_000, "TestOtherMsg", Value=1),
+            self.encode_row(1, 1_000_000_100, "TestOtherMsg", Value=2),
+            self.encode_row(2, 1_000_000_200, "TestSpeedMsg", SpeedLeft=5.0, SpeedRight=5.0),
+        ]
+        write_can_csv(session / "can.csv", rows)
+
+        decode_session(session, self.dbc_path)
+        out_rows = self.read_decoded(session)
+        self.assertEqual(out_rows[0]["TestSpeedMsg.SpeedLeft"], "")
+        self.assertEqual(out_rows[1]["TestSpeedMsg.SpeedLeft"], "")
+        self.assertAlmostEqual(float(out_rows[2]["TestSpeedMsg.SpeedLeft"]), 5.0)
+        # TestOtherMsg.Value is the carried-forward *latest* value, not the first.
+        self.assertEqual(out_rows[2]["TestOtherMsg.Value"], "2")
 
     def test_out_path_can_be_overridden(self):
         session = self.base / "session6"

@@ -5,6 +5,11 @@ description = "Initiative Vision 1 - on-vehicle data acquisition (Phase 1)"
 requires-python = ">=3.9"
 dependencies = []
 
+[project.optional-dependencies]
+# Only can/decode.py needs this -- offline DBC decoding for verification,
+# never part of the live logger. Nothing else in this project depends on it.
+decode = ["cantools"]
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"

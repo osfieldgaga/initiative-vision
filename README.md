@@ -1,26 +1,51 @@
 # Initiative Vision 1: on-vehicle data acquisition
 
-Phase 1 logs camera frames (and later CAN, GPS, IMU) with timestamps on a Raspberry Pi 3B. Plans are in `claude/sprints/`, starting with `00-roadmap.md`.
+Phase 1 logs camera frames and CAN bus data with timestamps on a Raspberry Pi 3B, on the vehicle. Plans are in `claude/sprints/`, starting with `00-roadmap.md`.
 
-## Current status (2026-09-22)
+## Quickstart: record frames + CAN together (on the Pi)
 
-Frame capture is proven on real hardware. **Recommended settings**, found after extensive testing (full story in `docs/capture-performance.md`):
+Standing config, always used: **1280×1280, quality 75, 3 encoder threads**. Two commands, in two terminals — frame capture creates the session, CAN joins it, so both land in one folder with one manifest.
+
+**Terminal 1** — start frame capture, note the `session:` path it prints:
+```
+cd ~/Desktop/initiative-vision
+PYTHONPATH=src python3 -m ivision.frames.record --source picamera2 \
+  --width 1280 --height 1280 --quality 75 --encode-workers 3 \
+  --out sessions --status-every 10
+```
+
+**Terminal 2** — join that session with CAN (check `can0` is listen-only first: `ip -details link show can0` should show `LISTEN-ONLY` — it does not survive a reboot, reset it if needed with `sudo ip link set can0 down && sudo ip link set can0 type can bitrate 500000 listen-only on && sudo ip link set can0 up`):
+```
+cd ~/Desktop/initiative-vision
+PYTHONPATH=src python3 -m ivision.can.record --source socketcan --interface can0 \
+  --session sessions/<paste the path Terminal 1 printed> --status-every 10
+```
+
+Drive, then **Ctrl-C both** when done — each finishes and finalizes its part of the shared manifest independently, in whatever order you actually stop them.
+
+Frames-only or CAN-only work the same way without `--session` (see their own sections below). To decode a session's raw CAN traffic against the Malibu's DBC afterward: `python -m ivision.can.decode sessions/<id> --dbc dbc/gm_global_a_powertrain.dbc` (needs `pip install cantools`, only for this step).
+
+## Current status (2026-09-26)
+
+Frame capture and CAN logging are both proven on real hardware, including together against the live vehicle bus. **Standing settings for frames**, in use always (full measurement story in `docs/capture-performance.md`):
 
 ```
-PYTHONPATH=src python3 -m ivision.frames.record --source picamera2 --width 1280 --height 960 --quality 75 --encode-workers 2
+PYTHONPATH=src python3 -m ivision.frames.record --source picamera2 --width 1280 --height 1280 --quality 75 --encode-workers 3
 ```
 
-This ran a full 10-minute continuous recording with **zero dropped frames** (disk or encoder) and peaked at 78.4°C, well under the Pi's 85°C throttle cap, and a 26-minute cool-down-cycled recording (`cycle.py`) with the same clean result across four chunks. Higher resolutions (1640x1232, 1080p) both hit thermal throttling and dropped frames on this Pi 3B even with a heatsink fitted — see the doc for what was tried and why it was rejected.
+Worth knowing honestly, not glossing over: this is denser than the doc's zero-drop-proven config (1280×960, 2 threads, ~7.2GB/hour) — at 1280×1280/3 threads, a real 10-minute session measured ~0.64% dropped frames and a peak temperature of 86°C (just over the 85°C throttle cap), versus zero drops and 78.4°C at 1280×960/2 threads. It's the standing choice anyway; 1280×960/2 threads remains the fallback if thermal reliability or drops become a real problem. Higher resolutions still (1640x1232, 1080p) hit thermal throttling and dropped far more frames on this Pi 3B even with a heatsink fitted — see the doc for what was tried and why it was rejected.
+
+CAN logging is proven against the real Malibu bus in listen-only mode: a 90-second real capture sustained ~2,280 msg/s with zero drops (queue, and confirmed against kernel interface counters). The Malibu's DBC (`dbc/gm_global_a_powertrain.dbc`) decodes 29 distinct message types from real traffic, including wheel speed, steering angle, yaw rate, lateral acceleration, and OnStar GPS — see `src/ivision/can/decode.py`.
 
 Also see `docs/timestamp-convention.md` (needs sign-off) for the timing rules every later stream must follow, and `docs/walkthrough/sprint-1-frames.md` for a full explanation of how the code works, including a minimal ~40-line reference version and why every piece of hardening beyond it exists.
 
-## What works today (Sprint 1, nearly done)
+## What works today
 
 | Status | What |
 |---|---|
-| Tested on real hardware | Recording (`record.py`), cool-down cycling (`cycle.py`), `verify_session`, `rebuild.py`, encoder/disk/thermal benchmarking tools, `preflight` |
-| Tested here (desktop) | The fake-camera pipeline, JPEG encoding, unit tests (160) |
-| Doesn't exist yet | CAN, GPS, IMU, upload (later sprints); a real power-cut test on the Pi itself; the code walkthrough doc |
+| Tested on real hardware | Frame recording (`record.py`), cool-down cycling (`cycle.py`), `verify_session`, `rebuild.py`, encoder/disk/thermal benchmarking tools, `preflight`; CAN recording (`can/record.py`) and live bus reading (`can/dump.py`) against the real Malibu bus in listen-only mode; frames+CAN sharing one session (`Session.attach()`); DBC decoding (`can/decode.py`) |
+| Tested here (desktop) | The fake-camera and fake-CAN pipelines, JPEG encoding, unit tests (260+) |
+| Doesn't exist yet | GPS/IMU as their own streams (both fold into CAN decoding instead, since OnStar GPS and the car's accelerometer are both CAN signals — see `claude/sprints/sprint-4-gps-optional.md`/`sprint-5-imu-optional.md`), device-side S3 upload (Sprint 6), `can/verify.py` (structural checks on a CAN log, mirroring `frames/verify.py`), a real power-cut test on the Pi itself |
 
 ## Requirements
 
@@ -82,10 +107,10 @@ vcgencmd measure_temp; vcgencmd get_throttled
 pgrep -af "[.]vscode-server"     # if this prints anything, close VS Code's connection to the Pi first
 ```
 
-**2. Record.** The proven-clean settings (full 10 minutes, zero dropped frames, peak 78°C — see `docs/capture-performance.md`):
+**2. Record.** The standing settings (see "Current status" above for the honest drop-rate/thermal trade-off versus the zero-drop 1280×960/2-thread alternative):
 
 ```
-PYTHONPATH=src python3 -m ivision.frames.record --source picamera2 --width 1280 --height 960 --quality 75 --encode-workers 2 --duration 600
+PYTHONPATH=src python3 -m ivision.frames.record --source picamera2 --width 1280 --height 1280 --quality 75 --encode-workers 3 --duration 600
 ```
 
 Watch the status line: `fps` near 30 and both `dropped:` counters at 0 is a pass. `backlog=N/256` climbing means the disk is falling behind.
@@ -104,10 +129,10 @@ Camera options for `record`:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--width`, `--height` | 1640 x 1232 | Output size. **Use `--width 1280 --height 960` — the only setting proven to run without dropping any frames**; higher resolutions throttle the Pi 3B even with a heatsink (see `docs/capture-performance.md`). `camera_probe` prints the real sensor mode list |
+| `--width`, `--height` | 1640 x 1232 | Output size. **Standing choice: `--width 1280 --height 1280`.** `--width 1280 --height 960` is the only setting proven to run with zero dropped frames, if reliability matters more than resolution on a given run; higher resolutions still (1640x1232, 1080p) throttle the Pi 3B even with a heatsink (see `docs/capture-performance.md`). `camera_probe` prints the real sensor mode list |
 | `--sensor-mode N` | none | Pin the sensor mode by its index in the probe list. **Use this for any run you'll calibrate against**, so the mode can't change between runs |
 | `--quality` | 90 | JPEG quality. Use 75 — see the doc for the full size/quality table |
-| `--encode-workers` | 3 | JPEG encoder threads. **Use 2** at the recommended resolution; 0 = encode in the capture thread |
+| `--encode-workers` | 3 | JPEG encoder threads. **Use 3** at the standing 1280×1280 resolution; 2 at 1280×960; 0 = encode in the capture thread |
 | `--encoder` | auto | `auto` = simplejpeg if installed (much faster than Pillow on the Pi), else Pillow |
 | `--exposure-us`, `--gain` | auto | Fix exposure time and/or analogue gain (turns auto-exposure off). Not yet tested in daylight/moving conditions — see the doc's "not yet measured" list |
 | `--status-every S` | 5 | Seconds between status lines, 0 = off |
@@ -124,7 +149,7 @@ Camera options for `record`:
 For a longer recording than has been tested continuously, or as a safety margin at a heavier resolution: `cycle.py` records for a fixed number of minutes, pauses to let the SoC cool, and repeats until a total *recorded* duration is reached. Each chunk is its own ordinary session (its own `frames.csv`, `system.csv`, `verify`-able independently) inside one parent folder — there's a gap in coverage during each cooldown, which is the accepted trade for staying under the thermal limit.
 
 ```
-PYTHONPATH=src python3 -m ivision.frames.cycle --source picamera2 --width 1280 --height 960 --quality 75 --encode-workers 2 --record-minutes 5 --cool-minutes 2 --total-minutes 20
+PYTHONPATH=src python3 -m ivision.frames.cycle --source picamera2 --width 1280 --height 1280 --quality 75 --encode-workers 3 --record-minutes 5 --cool-minutes 2 --total-minutes 20
 ```
 
 Tested for real (2026-09-22): 4× 5-minute chunks, 3× 2-minute cooldowns, 26 minutes wall time — all four chunks zero drops, each starting from nearly the same temperature regardless of how hot the previous one got. It takes every option `record` does (same table as above).
@@ -137,8 +162,8 @@ If you start a recording over SSH and then drive away from Wi-Fi range, the SSH 
 2. **A broken output pipe.** If the process is still printing its status line to the now-dead SSH connection, that write can itself fail. Ignoring SIGHUP doesn't fix this — you need to detach the process's output from the SSH session:
 
 ```
-nohup env PYTHONPATH=src python3 -m ivision.frames.record --source picamera2 --width 1280 --height 960 \
-    --quality 75 --encode-workers 2 --duration 1200 > ~/record.log 2>&1 &
+nohup env PYTHONPATH=src python3 -m ivision.frames.record --source picamera2 --width 1280 --height 1280 \
+    --quality 75 --encode-workers 3 --duration 1200 > ~/record.log 2>&1 &
 disown
 ```
 
@@ -223,8 +248,8 @@ Then `ssh osfield@192.168.0.105` should log in without a password. Inside a Clau
 | `src/ivision/preflight.py` | Checks memory, swap, temperature, power and disk space before recording and warns |
 | `src/ivision/sysmon.py` | Once-a-second memory/CPU/disk/temperature log written to `system.csv` in each session |
 | `src/ivision/csvlog.py` | Crash-tolerant CSV writer (shared by every stream) |
-| `src/ivision/session.py` | Session directory and manifest |
-| `src/ivision/frames/source.py` | Frame type and the fake camera source |
+| `src/ivision/session.py` | Session directory and manifest; `Session.attach()` lets frames and CAN share one session safely |
+| `src/ivision/frames/source.py` | Frame type, the fake camera source, and `IntervalSource` (one frame every N seconds, for calibration shoots) |
 | `src/ivision/frames/camera.py` | IMX219 source on Picamera2, proven on real hardware |
 | `src/ivision/frames/encode.py` | JPEG encoding: simplejpeg (default) and Pillow (fallback) |
 | `src/ivision/frames/camera_probe.py` | Camera check: modes, fps, timestamp clock, encode time |
@@ -236,4 +261,10 @@ Then `ssh osfield@192.168.0.105` should log in without a password. Inside a Clau
 | `src/ivision/frames/verify.py` | `verify_session` |
 | `src/ivision/frames/record.py` | Command-line recorder; also the shared argument/recording logic `cycle.py` reuses |
 | `src/ivision/frames/cycle.py` | Records in cool-down cycles (record N min, cool M min, repeat) |
+| `src/ivision/can/source.py` | `CanFrame` type, `SocketCanSource` (real interface), `FakeCanSource`; never transmits |
+| `src/ivision/can/pipeline.py` | `CanRecorder`: capture queue, writer thread, drop accounting -- no encode stage, no stall timeout (a quiet bus is expected, not a fault) |
+| `src/ivision/can/record.py` | Command-line recorder; `--session <dir>` joins a session `frames.record` already created |
+| `src/ivision/can/dump.py` | Live "candump"-style reader for a first-touch check of a bus, no session written |
+| `src/ivision/can/decode.py` | Offline DBC decoder (verification only, never part of the live logger); also derives longitudinal acceleration from wheel speed by differentiation |
+| `dbc/gm_global_a_powertrain.dbc` | The Malibu's signal definitions (GM Global A platform) |
 | `tests/` | Unit tests |

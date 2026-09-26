@@ -23,7 +23,7 @@ PYTHONPATH=src python3 -m ivision.can.record --source socketcan --interface can0
 
 Drive, then **Ctrl-C both** when done — each finishes and finalizes its part of the shared manifest independently, in whatever order you actually stop them.
 
-Frames-only or CAN-only work the same way without `--session` (see their own sections below). To decode a session's raw CAN traffic against the Malibu's DBC afterward: `python -m ivision.can.decode sessions/<id> --dbc dbc/gm_global_a_powertrain.dbc` (needs `pip install cantools`, only for this step).
+Frames-only or CAN-only work the same way without `--session` (see their own sections below). To decode a session's raw CAN traffic against the Malibu's DBC afterward, see "Decode CAN signals against the Malibu's DBC" below.
 
 ## Current status (2026-09-26)
 
@@ -207,15 +207,50 @@ It prints stats, then `PASS` or `FAIL`. Exit code 0 means pass, 1 means fail. Ad
 
 Useful stats in the output: `achieved_fps`, `interval_ms` (mean, p50, p99, max), `interval_histogram`, `seq_gaps` (dropped frames in the middle of the run), `missing_seq_total` (all dropped frames), and `suspected_missing_from_timing` (frames lost before the app saw them, estimated from timing gaps).
 
+**For a CAN session:**
+
+```
+PYTHONPATH=src python3 -m ivision.can.verify sessions/<session_folder>
+```
+
+Same PASS/FAIL and ERROR/WARNING shape, but **a long gap between frames is never flagged** — the bus going quiet (ignition off, car asleep) is normal, not a stall, unlike the camera. Checks three genuinely different kinds of loss (a real drive found all three happening at once — see "Current status" above): this pipeline's own queue drops, kernel/interface-level drops (`if_stats` in the manifest), and untracked socket-buffer loss (frames the interface delivered that never reached this process, not explained by either of the other two — the `SO_RXQ_OVFL` mechanism that would normally report this doesn't work here, see `can/pipeline.py`'s docstring).
+
+## Decode CAN signals against the Malibu's DBC
+
+`can.csv` is deliberately raw only (arbitration ID + raw bytes, no decoding) — same "raw-first" principle as the frame capture (raw JPEGs, no on-device inference). Decoding is a separate, offline, rerunnable step:
+
+```
+PYTHONPATH=src python3 -m ivision.can.decode sessions/<session_folder> --dbc dbc/gm_global_a_powertrain.dbc
+```
+
+This needs `cantools`, which nothing else in this project depends on (`pyproject.toml`'s `[decode]` extra, or plain `pip install cantools`). **If you're running this from a different machine than the one that recorded the session** (e.g. a laptop, over the sshfs-mounted project folder) — create the venv *outside* the mounted directory, not inside it:
+
+```
+python3 -m venv ~/.venv-ivision-decode          # NOT inside the mounted project folder
+~/.venv-ivision-decode/bin/pip install cantools
+PYTHONPATH=src ~/.venv-ivision-decode/bin/python3 -m ivision.can.decode sessions/<session_folder> --dbc dbc/gm_global_a_powertrain.dbc
+```
+
+A venv created inside an sshfs mount fails outright (`Operation not permitted` on its own interpreter binary — FUSE-based network mounts don't reliably support what `venv` needs to do), and a venv created on one machine can't be reused from another even over a working mount either way (`pip`/`python3` inside a venv are scripts with an absolute path to a specific interpreter baked in at creation time, so they simply don't exist as such from a different machine's point of view). The venv itself just needs to live somewhere local; the project files it operates on are fine to read over the mount.
+
+Output: **one combined `sessions/<id>/decoded.csv`**, alongside `frames.csv`/`can.csv`/`system.csv` — not a per-message-type file. Columns: `timestamp_ns, seq, message`, then every signal from every decoded message, namespaced `<MessageName>.<SignalName>` (e.g. `PSCMSteeringAngle.SteeringWheelAngle`) since several GM messages reuse the same signal name (`RollingCounter` appears on at least three unrelated messages in this DBC) — a bare name would silently conflate different signals. Each row is only ever one CAN frame, so only that row's own message's columns are populated; every other message's columns are blank on that row — filter by the `message` column to work with one signal group at a time. Rows whose ID has no match in the DBC are counted and printed in the decode summary, not written as blank rows.
+
+Also derived (not measured — the DBC has no direct longitudinal-accelerometer signal): `EBCMWheelSpdFront.vehicle_speed_mps`/`.longitudinal_accel_mps2` and the same pair for `EBCMWheelSpdRear`, from differentiating each message's own wheel-speed samples. Kept as two independent estimates on purpose (front and rear are separate messages, not synchronized to the same instant) so they can be cross-checked against each other.
+
 ## What a session looks like
 
 ```
 sessions/<session_id>/
-    session.json     manifest: start/stop clocks, camera config, counters, status
+    session.json     manifest: start/stop clocks, camera/CAN config, per-stream counters, status
+    session.json.lock  empty; makes sharing one manifest between frames and CAN processes safe
     system.csv       once-a-second system state (memory, CPU, disk, temperature), same clock as the ledger
     frames.csv       one row per frame: seq, filename, timestamp_ns
     frames/          00000000_<timestamp_ns>.jpg, 00000001_<timestamp_ns>.jpg, ...
+    can.csv          one row per CAN frame, raw only: seq, timestamp_ns, kernel_realtime_ns, can_id, is_extended, is_remote_frame, dlc, data
+    decoded.csv      only if you've run can.decode: the same CAN traffic, decoded against a DBC (see below)
 ```
+
+Frames and CAN are recorded by two independent processes that can share one session this way (`Session.attach()` — see the Quickstart above); either one alone is a normal, complete session missing whichever file it didn't record.
 
 `session.json` has `"status": "recording"` while running and `"complete"` after a clean stop. If it still says `recording` afterwards, the session ended uncleanly. The camera is always recorded as `"calibration": "uncalibrated"`.
 

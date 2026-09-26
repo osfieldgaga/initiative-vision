@@ -76,8 +76,10 @@ class DecodeSessionTest(unittest.TestCase):
         out_rows = self.read_decoded(session)
         self.assertEqual(len(out_rows), 1)
         self.assertEqual(out_rows[0]["message"], "TestSpeedMsg")
-        self.assertAlmostEqual(float(out_rows[0]["TestSpeedMsg.SpeedLeft"]), 10.0)
-        self.assertAlmostEqual(float(out_rows[0]["TestSpeedMsg.SpeedRight"]), 20.0)
+        # Bare signal names -- SpeedLeft/SpeedRight are unique to TestSpeedMsg
+        # in this session, so no message-name prefix is needed.
+        self.assertAlmostEqual(float(out_rows[0]["SpeedLeft"]), 10.0)
+        self.assertAlmostEqual(float(out_rows[0]["SpeedRight"]), 20.0)
 
     def test_unknown_id_is_counted_not_silently_dropped(self):
         session = self.base / "session2"
@@ -122,20 +124,22 @@ class DecodeSessionTest(unittest.TestCase):
         decode_session(session, self.dbc_path)
         out_rows = self.read_decoded(session)
         self.assertEqual(len(out_rows), 2)
-        self.assertIn("TestSpeedMsg.SpeedLeft", out_rows[0])
-        self.assertIn("TestOtherMsg.Value", out_rows[0])
+        # Bare names: "Value" only comes from TestOtherMsg in this session
+        # (TestCollidingNameMsg never appears), so it isn't ambiguous here.
+        self.assertIn("SpeedLeft", out_rows[0])
+        self.assertIn("Value", out_rows[0])
         # Row 0: TestSpeedMsg just arrived, TestOtherMsg has never been seen yet.
         self.assertEqual(out_rows[0]["message"], "TestSpeedMsg")
-        self.assertAlmostEqual(float(out_rows[0]["TestSpeedMsg.SpeedLeft"]), 1.0)
-        self.assertEqual(out_rows[0]["TestOtherMsg.Value"], "")
+        self.assertAlmostEqual(float(out_rows[0]["SpeedLeft"]), 1.0)
+        self.assertEqual(out_rows[0]["Value"], "")
         # Row 1: TestOtherMsg just arrived, but TestSpeedMsg's last value carries forward
         # -- this is the whole point of a snapshot: it's not blank just because this
         # particular frame wasn't a TestSpeedMsg.
         self.assertEqual(out_rows[1]["message"], "TestOtherMsg")
-        self.assertEqual(out_rows[1]["TestOtherMsg.Value"], "42")
-        self.assertAlmostEqual(float(out_rows[1]["TestSpeedMsg.SpeedLeft"]), 1.0)
+        self.assertEqual(out_rows[1]["Value"], "42")
+        self.assertAlmostEqual(float(out_rows[1]["SpeedLeft"]), 1.0)
 
-    def test_colliding_signal_names_across_messages_stay_distinct_columns(self):
+    def test_colliding_signal_names_across_messages_get_qualified_columns(self):
         session = self.base / "session5"
         session.mkdir()
         rows = [
@@ -146,6 +150,9 @@ class DecodeSessionTest(unittest.TestCase):
 
         decode_session(session, self.dbc_path)
         out_rows = self.read_decoded(session)
+        # Both messages define "Value" and both appear in this session, so
+        # the bare name would be ambiguous -- both get message-qualified.
+        self.assertNotIn("Value", out_rows[0])
         self.assertEqual(out_rows[0]["TestOtherMsg.Value"], "7")
         self.assertEqual(out_rows[0]["TestCollidingNameMsg.Value"], "")  # not seen yet
         self.assertEqual(out_rows[1]["TestCollidingNameMsg.Value"], "99")
@@ -163,11 +170,11 @@ class DecodeSessionTest(unittest.TestCase):
 
         decode_session(session, self.dbc_path)
         out_rows = self.read_decoded(session)
-        self.assertEqual(out_rows[0]["TestSpeedMsg.SpeedLeft"], "")
-        self.assertEqual(out_rows[1]["TestSpeedMsg.SpeedLeft"], "")
-        self.assertAlmostEqual(float(out_rows[2]["TestSpeedMsg.SpeedLeft"]), 5.0)
-        # TestOtherMsg.Value is the carried-forward *latest* value, not the first.
-        self.assertEqual(out_rows[2]["TestOtherMsg.Value"], "2")
+        self.assertEqual(out_rows[0]["SpeedLeft"], "")
+        self.assertEqual(out_rows[1]["SpeedLeft"], "")
+        self.assertAlmostEqual(float(out_rows[2]["SpeedLeft"]), 5.0)
+        # Value is the carried-forward *latest* value, not the first.
+        self.assertEqual(out_rows[2]["Value"], "2")
 
     def test_out_path_can_be_overridden(self):
         session = self.base / "session6"

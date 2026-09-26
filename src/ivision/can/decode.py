@@ -27,11 +27,17 @@ forward-filling asynchronous, multi-rate signals: a slow-updating signal
 faster-updating rows in between -- that's not a bug, it's what "most
 recently known" genuinely means until the next real update arrives.
 
-Signal columns are namespaced ``<MessageName>.<SignalName>`` (e.g.
-``PSCMSteeringAngle.SteeringWheelAngle``), not bare signal names -- several
-GM messages reuse the same signal name (``RollingCounter`` appears on at
-least three unrelated messages in this DBC), so a bare name would silently
-conflate different signals.
+Signal columns are the **bare signal name** (e.g. ``SteeringWheelAngle``,
+``BrakePedalPos``) -- not prefixed by the message name -- *except* for the
+handful that would otherwise collide: a few signal names repeat across more
+than one message in this DBC (``RollingCounter`` appears on six, for
+instance), and using the bare name for those specifically would silently
+conflate different signals. Only those get namespaced as
+``<MessageName>.<SignalName>``; every unambiguous signal (the large
+majority -- 109 of 113 in this DBC) keeps its plain name. Check the decode
+summary's printed column list, or the header row of ``decoded.csv`` itself,
+if you're not sure whether a given signal was ambiguous enough to need
+qualifying.
 
 Rows whose ID has no DBC entry are counted, not silently dropped -- printed
 in the summary, so "how much of this bus is still unidentified" stays
@@ -49,10 +55,14 @@ The DBC has no direct longitudinal-accelerometer signal (GM's
 ``LateralAcceleration``, on ``EBCMVehicleDynamic``, is lateral only). Instead,
 for each of ``EBCMWheelSpdFront`` and ``EBCMWheelSpdRear`` independently, this
 averages that message's own left/right wheel speed pair into a
-``<MessageName>.vehicle_speed_mps`` column, then differentiates consecutive
-samples *of that message alone* (not interleaved with any other message's
-rows -- using each sample's own logged ``timestamp_ns``, not an assumed
-fixed rate) into ``<MessageName>.longitudinal_accel_mps2``. Kept as two
+``vehicle_speed_mps`` value, then differentiates consecutive samples *of
+that message alone* (not interleaved with any other message's rows -- using
+each sample's own logged ``timestamp_ns``, not an assumed fixed rate) into
+``longitudinal_accel_mps2``. Both names are introduced by *two* messages
+(front and rear), so -- same rule as any other colliding signal name -- they
+end up namespaced: ``EBCMWheelSpdFront.vehicle_speed_mps`` /
+``EBCMWheelSpdFront.longitudinal_accel_mps2``, and the same pair for
+``EBCMWheelSpdRear``. Kept as two
 independent estimates -- front and rear are decoded from separate CAN
 messages arriving at separate times, not synchronized to the same instant --
 rather than merged into one signal, so they can be cross-checked against
@@ -121,7 +131,18 @@ def decode_session(session_dir, dbc_path, out_path=None) -> dict:
     _add_derived_longitudinal_accel(decoded_rows, signals_by_message,
                                      "EBCMWheelSpdRear", "RLWheelSpd", "RRWheelSpd")
 
-    columns = [f"{msg}.{sig}" for msg in sorted(signals_by_message) for sig in sorted(signals_by_message[msg])]
+    # A signal name gets the message-qualified column only if it would
+    # otherwise collide with the same name from a different message; every
+    # unambiguous signal keeps its plain name (see the module docstring).
+    messages_per_name: dict = {}
+    for msg, sigs in signals_by_message.items():
+        for sig in sigs:
+            messages_per_name.setdefault(sig, set()).add(msg)
+
+    def column_name(msg: str, sig: str) -> str:
+        return sig if len(messages_per_name[sig]) == 1 else f"{msg}.{sig}"
+
+    columns = sorted({column_name(msg, sig) for msg in signals_by_message for sig in signals_by_message[msg]})
 
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -132,7 +153,7 @@ def decode_session(session_dir, dbc_path, out_path=None) -> dict:
         last_known = {col: "" for col in columns}
         for timestamp_ns, seq, msg_name, signals in decoded_rows:
             for sig_name, value in signals.items():
-                last_known[f"{msg_name}.{sig_name}"] = value
+                last_known[column_name(msg_name, sig_name)] = value
             writer.writerow([timestamp_ns, seq, msg_name, *(last_known[col] for col in columns)])
 
     decoded_counts = Counter(r[2] for r in decoded_rows)

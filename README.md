@@ -23,7 +23,13 @@ PYTHONPATH=src python3 -m ivision.can.record --source socketcan --interface can0
 
 Drive, then **Ctrl-C both** when done — each finishes and finalizes its part of the shared manifest independently, in whatever order you actually stop them.
 
-Frames-only or CAN-only work the same way without `--session` (see their own sections below). To decode a session's raw CAN traffic against the Malibu's DBC afterward, see "Decode CAN signals against the Malibu's DBC" below.
+Frames-only or CAN-only work the same way without `--session`. **To decode that session's raw CAN traffic afterward** (standard command, with the recommended blacklist — see "Decode CAN signals" below for what's excluded and why):
+```
+PYTHONPATH=src python3 -m ivision.can.decode sessions/<session_folder> --dbc dbc/gm_global_a_powertrain.dbc \
+  --skip VIN_Part1,VIN_Part2,BCMImmobilizer,PSCM_148,PSCM_778 \
+  --skip RLWheelDir,RRWheelDir,YawRate2 \
+  --skip RollingCounter,SteeringButtonChecksum,LKASteeringCmdChecksum,PSCMStatusChecksum,GasRegenChecksum,FrictionBrakeChecksum,AEBChecksum
+```
 
 ## Command reference: what to run, and when
 

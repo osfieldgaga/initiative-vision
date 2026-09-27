@@ -1,6 +1,6 @@
 # Sprint 3 — Concurrent Run + Phase 1 Acceptance
 
-**Status:** Planned, awaiting your approval
+**Status:** In progress, started 2026-09-27. Resource-budget measurement done (task B); real vehicle drive test, cross-stream validation, and the data contract doc are still open (tasks C-E). Runner (task A) deliberately kept manual per your decision, not built as a launcher/systemd unit
 **Required for Phase 1:** Yes. **Completing this sprint completes Phase 1.**
 **Depends on:** Sprints 1 and 2
 **Effort:** M
@@ -36,8 +36,8 @@ Run frame capture and CAN logging together for a realistic drive on the Pi 3B, i
 - [ ] Enabled streams are configurable, so Sprints 4 and 5 plug in without changes to the runner's structure
 
 ### B. Resource budget on the real hardware
-- [ ] Measure combined CPU, memory, SD/USB write throughput and SoC temperature with both streams running. Compare against the Sprint 1 solo numbers to see what CAN costs the camera
-- [ ] If the camera drops frames when CAN is active, adjust priorities (process niceness, CPU affinity, writer scheduling) and re-measure. If that isn't enough, present the trade-off to you rather than quietly lowering the frame rate
+- [x] Measure combined CPU, memory, SD/USB write throughput and SoC temperature with both streams running. Compare against the Sprint 1 solo numbers to see what CAN costs the camera — **measured 2026-09-27, real vehicle bus, two runs:** frame drops 16.5% and 20.9% (vs ~0.64% solo), CAN queue drops 11% and 2.17% (vs ~0% solo). Confirmed real, reproduced twice; not thread-count-dependent (tried 1280x1280 at both 2 and 3 encoder threads — 2 threads alone, no CAN, already dropped 22.6%, ruling out "fewer CAN-competing threads" as the fix)
+- [x] If the camera drops frames when CAN is active, adjust priorities... — **Decided 2026-09-27: deferred, not fixed.** Two real candidate causes identified but not isolated (CPU/scheduling contention between JPEG encoding and CAN's threads; SD card I/O contention from ~2,200 CAN writes/sec landing alongside frame writes). Time-constrained (competition deadline) — accepted as a known, documented trade-off rather than blocking on it: **real drives proceed at 1280x1280/3 threads with this drop rate accepted**, revisit if it proves to matter once real Phase 2 processing is underway
 - [ ] Storage budget: GB per hour at the chosen operating point, drive length the storage supports, and the behaviour when it fills (stop cleanly, keep the earlier data intact)
 - [ ] Power: the Pi runs from a **battery / power bank** (your answer), so it isn't exposed to cranking or ignition-off transients. The risks are different: check the Pi's undervoltage/throttle flags under full load (a power bank or its cable that sags below ~4.8V throttles the Pi and can drop frames), confirm the bank doesn't cut output at low draw or under load spikes, and estimate runtime at the measured draw so a session can't outlast the battery. Test an abrupt cut (pull the cable) as well. The goal is logs that survive an abrupt power loss with only the trailing rows missing
 - [ ] Battery-low behaviour: the bank will eventually cut power with no warning. Decide whether to just accept that (and rely on the crash-safety above) or add a low-battery check. I'd start with the first

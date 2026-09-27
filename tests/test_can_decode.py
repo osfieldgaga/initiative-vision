@@ -20,6 +20,10 @@ BO_ 200 TestOtherMsg: 1 XXX
 
 BO_ 300 TestCollidingNameMsg: 1 XXX
  SG_ Value : 7|8@0+ (1,0) [0|255] "" XXX
+
+BO_ 400 TestMultiSigMsg: 1 XXX
+ SG_ RealSignal : 3|4@0+ (1,0) [0|15] "" XXX
+ SG_ RollingCounter : 7|4@0+ (1,0) [0|15] "" XXX
 """
 
 
@@ -217,6 +221,32 @@ class DecodeSessionTest(unittest.TestCase):
 
         self.assertEqual(summary["decoded_messages"], {"TestSpeedMsg": 1})
         self.assertEqual(summary["skipped_messages"], {"TestOtherMsg": 1})
+
+    def test_skip_by_signal_name_keeps_the_rest_of_that_message(self):
+        session = self.base / "session10"
+        session.mkdir()
+        rows = [self.encode_row(0, 1_000_000_000, "TestMultiSigMsg", RealSignal=5, RollingCounter=3)]
+        write_can_csv(session / "can.csv", rows)
+
+        summary = decode_session(session, self.dbc_path, skip_names={"RollingCounter"})
+
+        self.assertEqual(summary["decoded_messages"], {"TestMultiSigMsg": 1})  # message still decoded
+        self.assertEqual(summary["skipped_messages"], {})  # not a whole-message skip
+        self.assertEqual(summary["skipped_signals"], ["RollingCounter"])
+        out_rows = self.read_decoded(session)
+        self.assertEqual(out_rows[0]["RealSignal"], "5")
+        self.assertNotIn("RollingCounter", out_rows[0])  # no column at all for the skipped signal
+
+    def test_unknown_skip_name_is_reported_not_silently_ignored(self):
+        session = self.base / "session11"
+        session.mkdir()
+        write_can_csv(session / "can.csv",
+                      [self.encode_row(0, 1_000_000_000, "TestSpeedMsg", SpeedLeft=1.0, SpeedRight=1.0)])
+
+        summary = decode_session(session, self.dbc_path, skip_names={"TotallyMadeUpTypo"})
+
+        self.assertEqual(summary["unknown_skip_names"], ["TotallyMadeUpTypo"])
+        self.assertEqual(summary["decoded_messages"], {"TestSpeedMsg": 1})  # unaffected otherwise
 
     def test_parse_skip_distinguishes_hex_ids_from_names(self):
         skip_ids, skip_names = parse_skip(["0x1E5", "PSCMSteeringAngle", "0xC8,VIN_Part1"])

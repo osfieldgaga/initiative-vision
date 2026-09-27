@@ -38,7 +38,7 @@ Everything below is a separate command — **recording, verifying, decoding, and
 | | `ivision.frames.cycle` | Frames only, in cool-down cycles (record N min, cool M min, repeat) — for a longer recording than proven continuously |
 | **2. Verify what you got** | `ivision.frames.verify` | Structural check on a frame session: timestamps monotonic, drop counts reconcile, JPEG markers intact |
 | | `ivision.can.verify` | Same idea for a CAN session — plus kernel/interface-level and socket-buffer-level loss, which frames doesn't have |
-| **3. Turn it into something readable** (separate, offline, rerunnable — a different machine is fine) | `ivision.can.decode --dbc <file>` | **The only thing that produces actual signal values.** Raw CAN → `decoded.csv` (steering angle, wheel speed, GPS, etc.), against a DBC. Needs `cantools`, not installed by default. `--skip ID_OR_NAME` excludes a message you don't want in the output |
+| **3. Turn it into something readable** (separate, offline, rerunnable — a different machine is fine) | `ivision.can.decode --dbc <file>` | **The only thing that produces actual signal values.** Raw CAN → `decoded.csv` (steering angle, wheel speed, GPS, etc.), against a DBC. Needs `cantools`, not installed by default. `--skip ID_OR_NAME` excludes a message or signal you don't want in the output (see the standard blacklist below) |
 | | `ivision.frames.make_video` / `tools/make_video_standalone.py` | Frames → one MP4, for a quick look. The standalone copy needs nothing but the standard library + `ffmpeg`, for a bare machine you scp'd a session to |
 | **If something's wrong, or needs cleanup** | `ivision.frames.rebuild` | Rebuilds `frames.csv` from the frame filenames alone (each one embeds its own timestamp), if the ledger's lost or torn |
 | | `ivision.trim_to_can_overlap` | Deletes frames recorded before CAN started or after it stopped (independent processes rarely start/stop at exactly the same instant) — dry run by default, `--delete` to actually remove them |
@@ -248,10 +248,13 @@ Same PASS/FAIL and ERROR/WARNING shape, but **a long gap between frames is never
 
 ## Decode CAN signals against the Malibu's DBC
 
-`can.csv` is deliberately raw only (arbitration ID + raw bytes, no decoding) — same "raw-first" principle as the frame capture (raw JPEGs, no on-device inference). Decoding is a separate, offline, rerunnable step:
+`can.csv` is deliberately raw only (arbitration ID + raw bytes, no decoding) — same "raw-first" principle as the frame capture (raw JPEGs, no on-device inference). Decoding is a separate, offline, rerunnable step. **Standard command, always used** (see "Skipping messages or signals you don't want" below for what's excluded and why):
 
 ```
-PYTHONPATH=src python3 -m ivision.can.decode sessions/<session_folder> --dbc dbc/gm_global_a_powertrain.dbc
+PYTHONPATH=src python3 -m ivision.can.decode sessions/<session_folder> --dbc dbc/gm_global_a_powertrain.dbc \
+  --skip VIN_Part1,VIN_Part2,BCMImmobilizer,PSCM_148,PSCM_778 \
+  --skip RLWheelDir,RRWheelDir,YawRate2 \
+  --skip RollingCounter,SteeringButtonChecksum,LKASteeringCmdChecksum,PSCMStatusChecksum,GasRegenChecksum,FrictionBrakeChecksum,AEBChecksum
 ```
 
 This needs `cantools`, which nothing else in this project depends on (`pyproject.toml`'s `[decode]` extra, or plain `pip install cantools`). **If you're running this from a different machine than the one that recorded the session** (e.g. a laptop, over the sshfs-mounted project folder) — create the venv *outside* the mounted directory, not inside it:
@@ -270,14 +273,27 @@ Output: **one combined `sessions/<id>/decoded.csv`**, alongside `frames.csv`/`ca
 
 Also derived (not measured — the DBC has no direct longitudinal-accelerometer signal): `EBCMWheelSpdFront.vehicle_speed_mps`/`.longitudinal_accel_mps2` and the same pair for `EBCMWheelSpdRear`, from differentiating each message's own wheel-speed samples. Kept as two independent estimates on purpose (front and rear are separate messages, not synchronized to the same instant) so they can be cross-checked against each other.
 
-**Skipping messages you don't want:** `--skip` excludes a message entirely from `decoded.csv` — no columns at all, not even blank ones. Repeatable, or comma-separate several in one `--skip`. Each entry is either an arbitration ID with an explicit `0x` prefix (`0x1E5`), or a message name (`VIN_Part1`) — no `0x` prefix means it's treated as a name, so there's no ambiguity:
+**Skipping messages or signals you don't want:** `--skip` excludes something entirely from `decoded.csv` — no column at all, not even a blank one. Repeatable, or comma-separate several in one `--skip`. Each entry is one of three things, checked against the loaded DBC:
 
-```
-PYTHONPATH=src python3 -m ivision.can.decode sessions/<session_folder> --dbc dbc/gm_global_a_powertrain.dbc \
-  --skip VIN_Part1,VIN_Part2,BCMImmobilizer --skip 0x1E5
-```
+- An arbitration ID with an explicit `0x` prefix (`0x1E5`) — skips that whole message.
+- A message name (`VIN_Part1`) — same, skips the whole message.
+- A signal name (`RollingCounter`) — skips just that signal, keeping the rest of whichever message(s) define it. This is the important one for a message that mixes real signals with protocol noise: excluding the whole message would throw the real signals away too.
 
-Skipped rows get their own count in the decode summary, separate from "undecodable" (that means the DBC has no definition at all; "skipped" means it does, you just don't want it).
+No `0x` prefix means it's checked as a message name first, then a signal name — no ambiguity between ID- and name-based skipping. An entry matching neither is reported as a warning (probably a typo), not silently ignored.
+
+**The standard command above excludes, and why:**
+
+| Excluded | Kind | Why |
+|---|---|---|
+| `VIN_Part1`, `VIN_Part2` | message | The vehicle's VIN, broadcast on the bus — static, not driving data |
+| `BCMImmobilizer` | message | Anti-theft immobilizer status — not driving-relevant |
+| `PSCM_148`, `PSCM_778` | message | Defined in the DBC with **zero signals at all** — pure row-count clutter, no data |
+| `RLWheelDir`, `RRWheelDir` | signal (on `EBCMWheelSpdRear`, which also has the wheel speeds — kept) | Wheel rotation direction flags, not needed alongside the speed values themselves |
+| `YawRate2` | signal (on `EBCMVehicleDynamic`, which also has `LateralAcceleration`/`YawRate` — kept) | A second yaw-rate signal on the same message as `YawRate`; excluded to avoid carrying two versions of the same physical quantity |
+| `RollingCounter` | signal (on six different messages — kept everywhere else) | A message-integrity counter, incrementing for its own sake — never a physically meaningful value |
+| `SteeringButtonChecksum`, `LKASteeringCmdChecksum`, `PSCMStatusChecksum`, `GasRegenChecksum`, `FrictionBrakeChecksum`, `AEBChecksum` | signal | Protocol-integrity checksums, same reasoning as `RollingCounter` |
+
+Turn signals (`BCMTurnSignals`) and door/seatbelt status (`BCMDoorBeltStatus`) are deliberately **not** excluded — kept as potentially useful context. Add more to the blacklist the same way if something else turns out not to matter for your use.
 
 ## Trim frames that fall outside CAN's coverage
 

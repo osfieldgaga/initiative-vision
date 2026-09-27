@@ -46,16 +46,29 @@ in ``decoded.csv`` (no signals to show for them, and at typical undecoded
 proportions that would mean hundreds of thousands of all-blank rows for no
 benefit).
 
-**Skipping messages you don't want:** ``--skip`` excludes a message
-entirely -- decodable, just deliberately not wanted in the output (as
-opposed to "undecodable", which means the DBC has no definition for it at
-all). Repeatable, or comma-separate several in one ``--skip``. Each entry
-is either an arbitration ID, written with an explicit ``0x`` prefix (e.g.
-``0x1E5``), or a message name (e.g. ``VIN_Part1``) -- anything without the
-``0x`` prefix is treated as a name, so there's no ambiguity between the
-two. Skipped rows get their own counter in the summary, separate from
+**Skipping messages or signals you don't want:** ``--skip`` excludes
+something entirely -- decodable, just deliberately not wanted in the
+output (as opposed to "undecodable", which means the DBC has no
+definition for it at all). Repeatable, or comma-separate several in one
+``--skip``. Each entry is one of three things, checked against the loaded
+DBC (not just string-matched blindly):
+
+* An arbitration ID, written with an explicit ``0x`` prefix (e.g.
+  ``0x1E5``) -- skips that whole message.
+* A message name (e.g. ``VIN_Part1``) -- same, skips the whole message.
+* A signal name (e.g. ``RollingCounter``) -- skips just that signal,
+  keeping the rest of whichever message(s) define it. Useful for a signal
+  that's protocol noise (a rolling counter, a checksum) on a message that
+  also carries real signals you want -- excluding the whole message would
+  throw those away too.
+
+Anything without the ``0x`` prefix is checked against message names first,
+then signal names -- so there's no ambiguity between message- and
+ID-based skipping. A token matching neither is reported as a warning
+(``unknown_skip_names``), not silently ignored -- almost always a typo.
+Skipped rows/signals get their own counters in the summary, separate from
 "undecodable", and contribute no columns to ``decoded.csv`` at all (not
-even blank ones).
+even blank ones). See the README for the recommended standard blacklist.
 
 Needs ``cantools`` (``pip install ivision[decode]`` or plain ``pip install
 cantools``) -- not a dependency of anything else in this project.
@@ -122,12 +135,26 @@ def parse_skip(values) -> tuple:
 
 def decode_session(session_dir, dbc_path, out_path=None, skip_ids=None, skip_names=None) -> dict:
     """Decode <session_dir>/can.csv against dbc_path into one combined CSV.
-    Returns a summary dict (also what the CLI prints)."""
+    Returns a summary dict (also what the CLI prints).
+
+    skip_names is classified against the loaded DBC: a token matching a
+    message's own name skips that message entirely; a token matching a
+    signal's name (defined on some message, but not itself a message name)
+    skips just that signal, keeping the rest of whichever message(s) define
+    it. A token matching neither is reported back as unknown_skip_names --
+    likely a typo, not silently ignored."""
     db = load_database(dbc_path)
     session_dir = Path(session_dir)
     out_path = Path(out_path) if out_path is not None else session_dir / "decoded.csv"
     skip_ids = skip_ids or set()
     skip_names = skip_names or set()
+
+    all_message_names = {m.name for m in db.messages}
+    all_signal_names = {sig.name for m in db.messages for sig in m.signals}
+    skip_message_names = skip_names & all_message_names
+    skip_signal_names = skip_names - all_message_names
+    unknown_skip_names = skip_signal_names - all_signal_names
+    skip_signal_names -= unknown_skip_names
 
     # Each entry: [timestamp_ns, seq, message_name, {signal_name: value}].
     # Mutable in place (see _add_derived_longitudinal_accel) so derived
@@ -148,7 +175,7 @@ def decode_session(session_dir, dbc_path, out_path=None, skip_ids=None, skip_nam
             except KeyError:
                 undecodable[(can_id, is_extended)] += 1
                 continue
-            if can_id in skip_ids or message.name in skip_names:
+            if can_id in skip_ids or message.name in skip_message_names:
                 skipped[message.name] += 1
                 continue
             data = bytes.fromhex(row["data"])
@@ -157,6 +184,8 @@ def decode_session(session_dir, dbc_path, out_path=None, skip_ids=None, skip_nam
             except Exception:
                 undecodable[(can_id, is_extended)] += 1
                 continue
+            if skip_signal_names:
+                signals = {k: v for k, v in signals.items() if k not in skip_signal_names}
             decoded_rows.append([int(row["timestamp_ns"]), int(row["seq"]), message.name, signals])
             signals_by_message.setdefault(message.name, set()).update(signals)
 
@@ -197,6 +226,8 @@ def decode_session(session_dir, dbc_path, out_path=None, skip_ids=None, skip_nam
         "total_rows": total_rows,
         "decoded_messages": dict(decoded_counts),
         "skipped_messages": dict(skipped),
+        "skipped_signals": sorted(skip_signal_names),
+        "unknown_skip_names": sorted(unknown_skip_names),
         "undecodable_ids": {f"0x{can_id:X}{'x' if ext else ''}": n
                             for (can_id, ext), n in undecodable.items()},
         "out_path": str(out_path),
@@ -235,7 +266,10 @@ def main(argv=None) -> int:
     parser.add_argument("--out", default=None, help="output CSV path (default: <session_dir>/decoded.csv)")
     parser.add_argument("--skip", action="append", default=None, metavar="ID_OR_NAME",
                         help="skip this message entirely -- '0x1E5' (arbitration ID, needs the 0x) "
-                             "or 'VIN_Part1' (message name). Repeatable, or comma-separate several")
+                             "or 'VIN_Part1' (message name). Repeatable, or comma-separate several. A "
+                             "token can also be a signal name (e.g. 'RollingCounter') -- skips just "
+                             "that signal, keeping the rest of whichever message(s) define it. See "
+                             "the README's standard command for the recommended default blacklist")
     args = parser.parse_args(argv)
 
     skip_ids, skip_names = parse_skip(args.skip)
@@ -253,8 +287,14 @@ def main(argv=None) -> int:
         print(f"  {name}: {n} rows")
     if summary["skipped_messages"]:
         skipped_total = sum(summary["skipped_messages"].values())
-        print(f"skipped (blacklisted): {skipped_total} rows, {len(summary['skipped_messages'])} messages: "
-              f"{', '.join(sorted(summary['skipped_messages']))}")
+        print(f"skipped (blacklisted messages): {skipped_total} rows, {len(summary['skipped_messages'])} "
+              f"messages: {', '.join(sorted(summary['skipped_messages']))}")
+    if summary["skipped_signals"]:
+        print(f"skipped (blacklisted signals, kept the rest of their message): "
+              f"{', '.join(summary['skipped_signals'])}")
+    if summary["unknown_skip_names"]:
+        print(f"WARNING: --skip entries matched neither a message nor a signal name in this DBC "
+              f"(typo?): {', '.join(summary['unknown_skip_names'])}", file=sys.stderr)
     if summary["undecodable_ids"]:
         undecoded_total = sum(summary["undecodable_ids"].values())
         print(f"undecodable (no DBC entry or decode failed): {undecoded_total} rows, "

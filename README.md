@@ -38,9 +38,10 @@ Everything below is a separate command — **recording, verifying, decoding, and
 | | `ivision.frames.cycle` | Frames only, in cool-down cycles (record N min, cool M min, repeat) — for a longer recording than proven continuously |
 | **2. Verify what you got** | `ivision.frames.verify` | Structural check on a frame session: timestamps monotonic, drop counts reconcile, JPEG markers intact |
 | | `ivision.can.verify` | Same idea for a CAN session — plus kernel/interface-level and socket-buffer-level loss, which frames doesn't have |
-| **3. Turn it into something readable** (separate, offline, rerunnable — a different machine is fine) | `ivision.can.decode --dbc <file>` | **The only thing that produces actual signal values.** Raw CAN → `decoded.csv` (steering angle, wheel speed, GPS, etc.), against a DBC. Needs `cantools`, not installed by default |
+| **3. Turn it into something readable** (separate, offline, rerunnable — a different machine is fine) | `ivision.can.decode --dbc <file>` | **The only thing that produces actual signal values.** Raw CAN → `decoded.csv` (steering angle, wheel speed, GPS, etc.), against a DBC. Needs `cantools`, not installed by default. `--skip ID_OR_NAME` excludes a message you don't want in the output |
 | | `ivision.frames.make_video` / `tools/make_video_standalone.py` | Frames → one MP4, for a quick look. The standalone copy needs nothing but the standard library + `ffmpeg`, for a bare machine you scp'd a session to |
-| **If something's wrong** | `ivision.frames.rebuild` | Rebuilds `frames.csv` from the frame filenames alone (each one embeds its own timestamp), if the ledger's lost or torn |
+| **If something's wrong, or needs cleanup** | `ivision.frames.rebuild` | Rebuilds `frames.csv` from the frame filenames alone (each one embeds its own timestamp), if the ledger's lost or torn |
+| | `ivision.trim_to_can_overlap` | Deletes frames recorded before CAN started or after it stopped (independent processes rarely start/stop at exactly the same instant) — dry run by default, `--delete` to actually remove them |
 | | `disk_bench`, `encode_bench`, `camera_experiments` | One-off diagnostic tools for a specific hardware question — see "Diagnostic tools" |
 
 Full command lines, options, and output formats for each are in their own section below.
@@ -269,6 +270,28 @@ Output: **one combined `sessions/<id>/decoded.csv`**, alongside `frames.csv`/`ca
 
 Also derived (not measured — the DBC has no direct longitudinal-accelerometer signal): `EBCMWheelSpdFront.vehicle_speed_mps`/`.longitudinal_accel_mps2` and the same pair for `EBCMWheelSpdRear`, from differentiating each message's own wheel-speed samples. Kept as two independent estimates on purpose (front and rear are separate messages, not synchronized to the same instant) so they can be cross-checked against each other.
 
+**Skipping messages you don't want:** `--skip` excludes a message entirely from `decoded.csv` — no columns at all, not even blank ones. Repeatable, or comma-separate several in one `--skip`. Each entry is either an arbitration ID with an explicit `0x` prefix (`0x1E5`), or a message name (`VIN_Part1`) — no `0x` prefix means it's treated as a name, so there's no ambiguity:
+
+```
+PYTHONPATH=src python3 -m ivision.can.decode sessions/<session_folder> --dbc dbc/gm_global_a_powertrain.dbc \
+  --skip VIN_Part1,VIN_Part2,BCMImmobilizer --skip 0x1E5
+```
+
+Skipped rows get their own count in the decode summary, separate from "undecodable" (that means the DBC has no definition at all; "skipped" means it does, you just don't want it).
+
+## Trim frames that fall outside CAN's coverage
+
+Frames and CAN are independent processes (see Quickstart) that don't necessarily start or stop at exactly the same instant — one might join a few seconds after the other, or stop a few seconds before it. That leaves a leading and/or trailing stretch of frames with no CAN data alongside them at all. To find (and optionally remove) them:
+
+```
+PYTHONPATH=src python3 -m ivision.trim_to_can_overlap sessions/<session_folder>              # report only, deletes nothing
+PYTHONPATH=src python3 -m ivision.trim_to_can_overlap sessions/<session_folder> --delete      # actually delete
+```
+
+This is destructive and irreversible on real recorded data, so it defaults to a dry run, same pattern as `frames.rebuild`. With `--delete`, it removes the frame files, rewrites `frames.csv` to match what's left, and updates `session.json`'s `frames` stream so a later `frames.verify` run doesn't spuriously flag a mismatch — the manifest records that this was a deliberate trim (with counts), not silently adjusted numbers. `frames_captured` and the drop counters are left untouched, since they describe what the original recording actually did; only `frames_written` (what's actually on disk now) changes.
+
+"Matching" is a broad time-range overlap — does this frame's timestamp fall between the earliest and latest CAN row's timestamp — not a per-frame check that a specific nearby CAN row exists. CAN traffic is dense enough in practice that this is the right level of precision for trimming a leading/trailing gap; it's not trying to detect brief, expected quiet-bus stretches in the middle of a drive.
+
 ## Turn frames into a video
 
 Frame capture always stays one JPEG per frame — no video library, no codec, while recording (see "Current status"/the walkthrough for why). Stitching them into an MP4 for a quick look is a separate, offline, rerunnable step, same idea as CAN decoding above.
@@ -355,6 +378,7 @@ Then `ssh osfield@192.168.0.105` should log in without a password. Inside a Clau
 | `src/ivision/can/pipeline.py` | `CanRecorder`: capture queue, writer thread, drop accounting -- no encode stage, no stall timeout (a quiet bus is expected, not a fault) |
 | `src/ivision/can/record.py` | Command-line recorder; `--session <dir>` joins a session `frames.record` already created |
 | `src/ivision/can/dump.py` | Live "candump"-style reader for a first-touch check of a bus, no session written |
-| `src/ivision/can/decode.py` | Offline DBC decoder (verification only, never part of the live logger); also derives longitudinal acceleration from wheel speed by differentiation |
+| `src/ivision/can/decode.py` | Offline DBC decoder (verification only, never part of the live logger); derives longitudinal acceleration from wheel speed by differentiation; `--skip` blacklists a message by ID or name |
 | `dbc/gm_global_a_powertrain.dbc` | The Malibu's signal definitions (GM Global A platform) |
+| `src/ivision/trim_to_can_overlap.py` | Deletes frames outside CAN's coverage window (leading/trailing frames from independent start/stop times) |
 | `tests/` | Unit tests |

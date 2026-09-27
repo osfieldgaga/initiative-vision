@@ -46,6 +46,17 @@ in ``decoded.csv`` (no signals to show for them, and at typical undecoded
 proportions that would mean hundreds of thousands of all-blank rows for no
 benefit).
 
+**Skipping messages you don't want:** ``--skip`` excludes a message
+entirely -- decodable, just deliberately not wanted in the output (as
+opposed to "undecodable", which means the DBC has no definition for it at
+all). Repeatable, or comma-separate several in one ``--skip``. Each entry
+is either an arbitration ID, written with an explicit ``0x`` prefix (e.g.
+``0x1E5``), or a message name (e.g. ``VIN_Part1``) -- anything without the
+``0x`` prefix is treated as a name, so there's no ambiguity between the
+two. Skipped rows get their own counter in the summary, separate from
+"undecodable", and contribute no columns to ``decoded.csv`` at all (not
+even blank ones).
+
 Needs ``cantools`` (``pip install ivision[decode]`` or plain ``pip install
 cantools``) -- not a dependency of anything else in this project.
 
@@ -90,12 +101,33 @@ def load_database(dbc_path):
     return cantools.database.load_file(dbc_path)
 
 
-def decode_session(session_dir, dbc_path, out_path=None) -> dict:
+def parse_skip(values) -> tuple:
+    """Each value may be comma-separated. A token with an explicit '0x'
+    prefix is an arbitration ID; anything else is a message name -- no
+    guessing, so 'DEAD' (a plausible message name) is never mistaken for
+    hex. Returns (skip_ids: set[int], skip_names: set[str])."""
+    skip_ids: set = set()
+    skip_names: set = set()
+    for value in values or []:
+        for token in value.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if token.lower().startswith("0x"):
+                skip_ids.add(int(token, 16))
+            else:
+                skip_names.add(token)
+    return skip_ids, skip_names
+
+
+def decode_session(session_dir, dbc_path, out_path=None, skip_ids=None, skip_names=None) -> dict:
     """Decode <session_dir>/can.csv against dbc_path into one combined CSV.
     Returns a summary dict (also what the CLI prints)."""
     db = load_database(dbc_path)
     session_dir = Path(session_dir)
     out_path = Path(out_path) if out_path is not None else session_dir / "decoded.csv"
+    skip_ids = skip_ids or set()
+    skip_names = skip_names or set()
 
     # Each entry: [timestamp_ns, seq, message_name, {signal_name: value}].
     # Mutable in place (see _add_derived_longitudinal_accel) so derived
@@ -103,6 +135,7 @@ def decode_session(session_dir, dbc_path, out_path=None) -> dict:
     decoded_rows: list = []
     signals_by_message: dict = {}
     undecodable: Counter = Counter()
+    skipped: Counter = Counter()
     total_rows = 0
 
     with open(session_dir / "can.csv", newline="", encoding="utf-8") as f:
@@ -114,6 +147,9 @@ def decode_session(session_dir, dbc_path, out_path=None) -> dict:
                 message = db.get_message_by_frame_id(can_id)
             except KeyError:
                 undecodable[(can_id, is_extended)] += 1
+                continue
+            if can_id in skip_ids or message.name in skip_names:
+                skipped[message.name] += 1
                 continue
             data = bytes.fromhex(row["data"])
             try:
@@ -160,6 +196,7 @@ def decode_session(session_dir, dbc_path, out_path=None) -> dict:
     return {
         "total_rows": total_rows,
         "decoded_messages": dict(decoded_counts),
+        "skipped_messages": dict(skipped),
         "undecodable_ids": {f"0x{can_id:X}{'x' if ext else ''}": n
                             for (can_id, ext), n in undecodable.items()},
         "out_path": str(out_path),
@@ -196,10 +233,15 @@ def main(argv=None) -> int:
     parser.add_argument("session_dir", help="a session directory containing can.csv")
     parser.add_argument("--dbc", required=True, help="path to the .dbc signal definition file")
     parser.add_argument("--out", default=None, help="output CSV path (default: <session_dir>/decoded.csv)")
+    parser.add_argument("--skip", action="append", default=None, metavar="ID_OR_NAME",
+                        help="skip this message entirely -- '0x1E5' (arbitration ID, needs the 0x) "
+                             "or 'VIN_Part1' (message name). Repeatable, or comma-separate several")
     args = parser.parse_args(argv)
 
+    skip_ids, skip_names = parse_skip(args.skip)
     try:
-        summary = decode_session(args.session_dir, args.dbc, out_path=args.out)
+        summary = decode_session(args.session_dir, args.dbc, out_path=args.out,
+                                  skip_ids=skip_ids, skip_names=skip_names)
     except ImportError:
         print("cantools is not installed. Run: pip install cantools", file=sys.stderr)
         return 2
@@ -209,6 +251,10 @@ def main(argv=None) -> int:
     print("decoded messages:")
     for name, n in sorted(summary["decoded_messages"].items()):
         print(f"  {name}: {n} rows")
+    if summary["skipped_messages"]:
+        skipped_total = sum(summary["skipped_messages"].values())
+        print(f"skipped (blacklisted): {skipped_total} rows, {len(summary['skipped_messages'])} messages: "
+              f"{', '.join(sorted(summary['skipped_messages']))}")
     if summary["undecodable_ids"]:
         undecoded_total = sum(summary["undecodable_ids"].values())
         print(f"undecodable (no DBC entry or decode failed): {undecoded_total} rows, "

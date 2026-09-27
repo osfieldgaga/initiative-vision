@@ -8,7 +8,7 @@ try:
 except ImportError:
     cantools = None
 
-from ivision.can.decode import _add_derived_longitudinal_accel, decode_session
+from ivision.can.decode import _add_derived_longitudinal_accel, decode_session, parse_skip
 
 _TEST_DBC = """\
 BO_ 100 TestSpeedMsg: 4 XXX
@@ -185,6 +185,47 @@ class DecodeSessionTest(unittest.TestCase):
         summary = decode_session(session, self.dbc_path, out_path=custom)
         self.assertEqual(summary["out_path"], str(custom))
         self.assertTrue(custom.exists())
+
+    def test_skip_by_message_name(self):
+        session = self.base / "session8"
+        session.mkdir()
+        rows = [
+            self.encode_row(0, 1_000_000_000, "TestSpeedMsg", SpeedLeft=1.0, SpeedRight=1.0),
+            self.encode_row(1, 1_000_000_100, "TestOtherMsg", Value=42),
+        ]
+        write_can_csv(session / "can.csv", rows)
+
+        summary = decode_session(session, self.dbc_path, skip_names={"TestOtherMsg"})
+
+        self.assertEqual(summary["decoded_messages"], {"TestSpeedMsg": 1})
+        self.assertEqual(summary["skipped_messages"], {"TestOtherMsg": 1})
+        self.assertEqual(summary["undecodable_ids"], {})  # skipped, not undecodable -- different reason
+        out_rows = self.read_decoded(session)
+        self.assertEqual(len(out_rows), 1)
+        self.assertNotIn("Value", out_rows[0])  # no column at all for a skipped message
+
+    def test_skip_by_arbitration_id(self):
+        session = self.base / "session9"
+        session.mkdir()
+        rows = [
+            self.encode_row(0, 1_000_000_000, "TestSpeedMsg", SpeedLeft=1.0, SpeedRight=1.0),
+            self.encode_row(1, 1_000_000_100, "TestOtherMsg", Value=42),
+        ]
+        write_can_csv(session / "can.csv", rows)
+
+        summary = decode_session(session, self.dbc_path, skip_ids={0xC8})  # TestOtherMsg's frame_id (200)
+
+        self.assertEqual(summary["decoded_messages"], {"TestSpeedMsg": 1})
+        self.assertEqual(summary["skipped_messages"], {"TestOtherMsg": 1})
+
+    def test_parse_skip_distinguishes_hex_ids_from_names(self):
+        skip_ids, skip_names = parse_skip(["0x1E5", "PSCMSteeringAngle", "0xC8,VIN_Part1"])
+        self.assertEqual(skip_ids, {0x1E5, 0xC8})
+        self.assertEqual(skip_names, {"PSCMSteeringAngle", "VIN_Part1"})
+
+    def test_parse_skip_handles_none_and_empty(self):
+        self.assertEqual(parse_skip(None), (set(), set()))
+        self.assertEqual(parse_skip([]), (set(), set()))
 
 
 class DerivedLongitudinalAccelTest(unittest.TestCase):

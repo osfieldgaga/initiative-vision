@@ -201,21 +201,27 @@ def verify_session(session_dir, check_content: bool = True) -> Report:
                 f"manifest says {stream.get('frames_written')} frames written, ledger has {len(rows)}"
             )
         # Exact reconciliation: every frame the app received is either a ledger
-        # row, counted as dropped (queue full), or counted as unwritten (storage
-        # error). This also catches drops at the very start or end of a run,
-        # which leave no interior seq gap.
+        # row, counted as dropped (queue full), counted as unwritten (storage
+        # error), or -- after a deliberate trim_to_can_overlap run -- counted
+        # there instead. This also catches drops at the very start or end of a
+        # run, which leave no interior seq gap.
         captured = stream.get("frames_captured")
         dropped_queue = stream.get("frames_dropped_queue")
         dropped_encode = stream.get("frames_dropped_encode") or 0
         unwritten = stream.get("frames_unwritten_after_error")
         last_captured = stream.get("last_seq_captured")
+        trimmed = stream.get("trimmed_to_can_overlap") or {}
+        trimmed_count = trimmed.get("dropped", 0)
+        if trimmed:
+            report.stats["trimmed_to_can_overlap"] = trimmed
         if None not in (captured, dropped_queue, unwritten):
             dropped = dropped_queue + dropped_encode
-            if captured != len(rows) + dropped + unwritten:
+            if captured != len(rows) + dropped + unwritten + trimmed_count:
                 report.errors.append(
                     f"manifest accounting mismatch: captured {captured} != ledger rows "
                     f"{len(rows)} + dropped {dropped} ({dropped_queue} queue, "
                     f"{dropped_encode} encode) + unwritten {unwritten}"
+                    + (f" + trimmed {trimmed_count}" if trimmed else "")
                 )
         if captured is not None and last_captured is not None and captured != last_captured + 1:
             report.errors.append(

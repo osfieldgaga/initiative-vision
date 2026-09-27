@@ -275,6 +275,45 @@ class VerifyTest(TmpDirCase):
         self.assertFalse(r.ok)
         self.assertTrue(any("dropped" in e for e in r.errors))
 
+    def test_trimmed_to_can_overlap_is_accounted_for_not_flagged_as_a_mismatch(self):
+        # A session trim_to_can_overlap has legitimately shrunk: fewer ledger
+        # rows (and files) than frames_captured, explained entirely by a
+        # recorded trim -- ledger row and file removed together, matching
+        # what trim_to_can_overlap.py --delete actually does.
+        s = self.make(n=50)
+        removed = 10
+        lines = s.frames_csv.read_text().splitlines(keepends=True)
+        removed_lines, kept_lines = lines[1:1 + removed], lines[1 + removed:]
+        for line in removed_lines:
+            name = line.split(",")[1]
+            (s.root / name).unlink()
+        s.frames_csv.write_text("".join([lines[0]] + kept_lines))
+        s.manifest["streams"]["frames"]["frames_written"] = 50 - removed
+        s.manifest["streams"]["frames"]["trimmed_to_can_overlap"] = {
+            "dropped": removed, "kept": 50 - removed,
+            "overlap_start_ns": 0, "overlap_end_ns": 0,
+        }
+        s.flush()
+        r = verify_session(s.root)
+        self.assertTrue(r.ok, r.format())
+        self.assertEqual(r.stats["trimmed_to_can_overlap"]["dropped"], removed)
+
+    def test_trimmed_to_can_overlap_does_not_excuse_a_real_unexplained_mismatch(self):
+        # The field being present only excuses exactly its own count -- a
+        # further, separate discrepancy must still be caught.
+        s = self.make(n=50)
+        lines = s.frames_csv.read_text().splitlines(keepends=True)
+        s.frames_csv.write_text("".join([lines[0]] + lines[11:]))  # drop 10 rows for real
+        s.manifest["streams"]["frames"]["frames_written"] = 40
+        s.manifest["streams"]["frames"]["trimmed_to_can_overlap"] = {
+            "dropped": 3, "kept": 47,  # claims only 3 were trimmed, not the real 10
+            "overlap_start_ns": 0, "overlap_end_ns": 0,
+        }
+        s.flush()
+        r = verify_session(s.root)
+        self.assertFalse(r.ok)
+        self.assertTrue(any("accounting mismatch" in e for e in r.errors))
+
     def test_timing_gap_without_seq_gap_is_counted_as_suspected_missing(self):
         # Frames lost upstream of the app leave no seq gap but a timing gap.
         session = Session.create(self.base)

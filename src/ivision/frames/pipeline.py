@@ -97,10 +97,20 @@ class Recorder:
         stop_timeout_s: float = 5.0,
         stall_timeout_s: float | None = 5.0,
         encode_nice: int | None = 10,
+        live_preview_path: Path | None = None,
     ):
         self.session = session
         self.source = source
         self.fsync_files = fsync_files
+        # Overwritten periodically with the latest frame, for an external
+        # process (e.g. a live overlay viewer) to poll -- not a session
+        # file, no ledger row, no crash-safety needs (purely ephemeral).
+        # Throttled, not written every frame: doubling write volume on an
+        # already frame-drop-prone pipeline for a file nothing reads faster
+        # than a couple of times a second isn't worth the I/O.
+        self._live_preview_path = live_preview_path
+        self._live_preview_interval_s = 0.5
+        self._last_live_preview_mono = 0.0
         self.encode_workers = encode_workers
         # Raw frames alive at once = in-flight encodes. This bounds memory.
         self.max_inflight = max_inflight or max(1, encode_workers * 2)
@@ -297,6 +307,14 @@ class Recorder:
                 path = self.session.root / frame_relpath(frame)
                 self._file_writer(path, frame.data, self.fsync_files)
                 self._csv.write_row([frame.seq, frame_relpath(frame), frame.timestamp_ns])
+                if self._live_preview_path is not None:
+                    now = time.monotonic()
+                    if now - self._last_live_preview_mono >= self._live_preview_interval_s:
+                        self._last_live_preview_mono = now
+                        try:
+                            write_frame_file(self._live_preview_path, frame.data, fsync=False)
+                        except OSError:
+                            pass  # a live preview is a nice-to-have; never let it fail the recording
             except Exception as exc:
                 # Keep draining after a failure so the shutdown put() cannot block.
                 kind = "storage_error" if isinstance(exc, OSError) else "writer_error"

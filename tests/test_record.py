@@ -22,6 +22,7 @@ class FakeArgs:
         self.encode_workers = 0
         self.stall_timeout = 5.0
         self.interval_s = None
+        self.live_preview = False
         self.encode_nice = 10
         self.csv_fsync_interval = 1.0
         self.__dict__.update(kw)

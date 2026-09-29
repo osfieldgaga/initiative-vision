@@ -18,6 +18,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 
 from ..preflight import format_findings, run_preflight
 from ..session import Session
@@ -70,6 +71,11 @@ def add_recorder_args(parser) -> None:
                              "8 s at 30 fps (about 40 MB at 160 KB/frame): enough to hide the SD card's "
                              "multi-second pauses. More frames lost if power is cut")
     parser.add_argument("--fsync-files", action="store_true", help="fsync every frame file")
+    parser.add_argument("--live-preview", action="store_true",
+                        help="also overwrite latest_frame.jpg (in the current directory) roughly twice a "
+                             "second, for an external process to poll -- e.g. a separate live overlay "
+                             "viewer. Off by default: it's extra write I/O on a pipeline that's already "
+                             "shown it can be frame-drop-prone under load")
     parser.add_argument("--stall-timeout", type=float, default=5.0,
                         help="end the run if no frame arrives for this many seconds (0 = off)")
     parser.add_argument("--csv-fsync-interval", type=float, default=1.0,
@@ -139,6 +145,7 @@ def make_recorder(session: Session, source, args) -> Recorder:
         stall_timeout_s=resolve_stall_timeout(args),
         encode_nice=args.encode_nice or None,
         fsync_interval_s=args.csv_fsync_interval,
+        live_preview_path=Path("latest_frame.jpg") if args.live_preview else None,
     )
 
 

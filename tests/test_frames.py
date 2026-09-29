@@ -197,6 +197,47 @@ class PipelineTest(TmpDirCase):
         self.assertEqual(cam["target_fps"], 30)
 
 
+class LivePreviewTest(TmpDirCase):
+    def test_disabled_by_default_no_file_written(self):
+        session, _ = record(self.base, num_frames=5)
+        self.assertFalse((self.base / "latest_frame.jpg").exists())
+
+    def test_writes_the_latest_frame_when_enabled(self):
+        preview_path = self.base / "latest_frame.jpg"
+        source = FakeCameraSource(fps=30, num_frames=5, realtime=False, start_ns=0)
+        session = Session.create(self.base / "session")
+        recorder = Recorder(session, source, flush_interval_s=0.02, live_preview_path=preview_path)
+        recorder._live_preview_interval_s = 0  # no throttling: every frame should update it
+        recorder.run()
+
+        self.assertTrue(preview_path.exists())
+        self.assertEqual(preview_path.read_bytes(), synthetic_jpeg(4))  # seq 4: the last of 5 frames
+
+    def test_throttled_by_default_not_every_frame(self):
+        preview_path = self.base / "latest_frame.jpg"
+        # realtime=False: frames arrive back-to-back with ~no real time elapsed,
+        # so the default 0.5s throttle should let only the first one through.
+        source = FakeCameraSource(fps=1000, num_frames=50, realtime=False, start_ns=0)
+        session = Session.create(self.base / "session")
+        recorder = Recorder(session, source, flush_interval_s=0.02, live_preview_path=preview_path)
+        recorder.run()
+
+        self.assertTrue(preview_path.exists())
+        self.assertEqual(preview_path.read_bytes(), synthetic_jpeg(0))  # only the first frame got through
+
+    def test_write_failure_does_not_fail_the_recording(self):
+        # A directory that doesn't exist -- guaranteed OSError on write.
+        preview_path = self.base / "no_such_dir" / "latest_frame.jpg"
+        source = FakeCameraSource(fps=30, num_frames=5, realtime=False, start_ns=0)
+        session = Session.create(self.base / "session")
+        recorder = Recorder(session, source, flush_interval_s=0.02, live_preview_path=preview_path)
+        recorder._live_preview_interval_s = 0
+        summary = recorder.run()
+
+        self.assertEqual(summary["stop_reason"], "source_ended")  # not a storage_error
+        self.assertEqual(summary["frames_written"], 5)  # the real per-frame files are unaffected
+
+
 class VerifyTest(TmpDirCase):
     def make(self, n=50):
         session, _ = record(self.base, num_frames=n)

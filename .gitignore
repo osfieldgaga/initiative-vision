@@ -4,3 +4,5 @@ __pycache__/
 sessions/
 .pytest_cache/
 _disk_bench/
+latest_frame.jpg
+*/latest_frame.jpg

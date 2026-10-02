@@ -39,8 +39,8 @@ def add_camera_args(parser) -> None:
                              "samples it. Automatically raises --stall-timeout so normal gaps "
                              "between kept frames aren't mistaken for a stalled camera")
     cam = parser.add_argument_group("camera options (picamera2 only)")
-    cam.add_argument("--width", type=int, default=1640)
-    cam.add_argument("--height", type=int, default=1232)
+    cam.add_argument("--width", type=int, default=1280)
+    cam.add_argument("--height", type=int, default=1280)
     cam.add_argument("--quality", type=int, default=90, help="JPEG quality 1-100")
     cam.add_argument("--sensor-mode", type=int, default=None,
                      help="sensor mode index from camera_probe; set it for calibration-critical runs")
@@ -227,6 +227,8 @@ def record_one(source, out_dir, args, duration=None, status_every: float = 5.0):
         threading.Thread(target=status_loop, args=(recorder, status_every, stop_status), daemon=True).start()
 
     monitor = start_sysmon(session, recorder, args, skip=args.no_sysmon)
+
+    # print the session folder
     print(f"session: {session.root}", flush=True)
     summary = recorder.run()
     stop_status.set()

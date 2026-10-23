@@ -1,10 +1,11 @@
 import errno
+import os
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 
-from ivision.frames.pipeline import Recorder, write_frame_file
+from ivision.frames.pipeline import Recorder, write_frame_file, write_live_preview
 from ivision.frames.source import FakeCameraSource, synthetic_jpeg
 from ivision.frames.verify import verify_session
 from ivision.session import Session, load_manifest
@@ -198,6 +199,23 @@ class PipelineTest(TmpDirCase):
 
 
 class LivePreviewTest(TmpDirCase):
+    def test_preview_mtime_is_the_capture_time(self):
+        import time
+        path = self.base / "latest_frame.jpg"
+        captured_mono = time.monotonic_ns() - 300_000_000  # captured 0.3 s ago
+        write_live_preview(path, b"jpg", captured_mono)
+        st = os.stat(path)
+        self.assertEqual(path.read_bytes(), b"jpg")
+        self.assertAlmostEqual(st.st_mtime, time.time() - 0.3, delta=0.05)  # capture time, epoch
+        self.assertAlmostEqual(st.st_ctime, time.time(), delta=0.05)        # write time
+        self.assertFalse(path.with_name(path.name + ".tmp").exists())
+
+    def test_preview_off_timeline_timestamp_keeps_normal_mtime(self):
+        import time
+        path = self.base / "latest_frame.jpg"
+        write_live_preview(path, b"jpg", 123)  # e.g. a fake source's timeline
+        self.assertAlmostEqual(os.stat(path).st_mtime, time.time(), delta=0.05)
+
     def test_disabled_by_default_no_file_written(self):
         session, _ = record(self.base, num_frames=5)
         self.assertFalse((self.base / "latest_frame.jpg").exists())

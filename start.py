@@ -32,7 +32,7 @@ def stream_can(proc):
 camera = subprocess.Popen(
     ["python3", "-m", "ivision.frames.record", "--source", "picamera2", "--width", "1280",
      "--height", "1280", "--quality", "90", "--encode-workers", "3", "--out", "sessions",
-     "--status-every", "10"],
+     "--status-every", "10", "--live-preview"],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     text=True,

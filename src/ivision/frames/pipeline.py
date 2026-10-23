@@ -82,6 +82,30 @@ def write_frame_file(path: Path, data: bytes, fsync: bool = False) -> None:
     os.replace(tmp, path)
 
 
+# A capture time further from "now" than this means the timestamp isn't on time.monotonic_ns()'s
+# timeline (e.g. a fake source), so the preview keeps its ordinary mtime instead.
+_MAX_CAPTURE_AGE_NS = 60 * 1_000_000_000
+
+
+def write_live_preview(path: Path, data: bytes, timestamp_ns: int) -> None:
+    """Atomically overwrite the live preview, with its mtime set to the frame's capture time.
+
+    ``timestamp_ns`` is on the monotonic clock (libcamera's SensorTimestamp); it is converted
+    to epoch time here, in the same process. The uploader reads the capture time from the
+    mtime, and the write time from the ctime (which utime and the rename set to now). The
+    gap between them -- encode plus any disk backlog -- is otherwise invisible in the lag.
+    Setting the mtime on the .tmp file before the rename keeps image and time consistent.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+    age_ns = time.monotonic_ns() - timestamp_ns
+    if 0 <= age_ns <= _MAX_CAPTURE_AGE_NS:
+        captured_ns = time.time_ns() - age_ns
+        os.utime(tmp, ns=(captured_ns, captured_ns))
+    os.replace(tmp, path)
+
+
 class Recorder:
     def __init__(
         self,
@@ -312,7 +336,7 @@ class Recorder:
                     if now - self._last_live_preview_mono >= self._live_preview_interval_s:
                         self._last_live_preview_mono = now
                         try:
-                            write_frame_file(self._live_preview_path, frame.data, fsync=False)
+                            write_live_preview(self._live_preview_path, frame.data, frame.timestamp_ns)
                         except OSError:
                             pass  # a live preview is a nice-to-have; never let it fail the recording
             except Exception as exc:
